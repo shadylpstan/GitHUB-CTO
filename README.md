@@ -37,6 +37,11 @@ GITHUB_TOKEN=github_pat_or_ghp_token
 GITHUB_REPOSITORY=owner/repo
 OPENAI_API_KEY=sk-your-key
 OPENAI_MODEL=gpt-4.1-mini
+OPENAI_PLANNING_TIMEOUT=60
+OPENAI_PATCH_TIMEOUT=180
+OPENAI_MAX_RETRIES=2
+MAX_SELECTED_FILES=8
+MAX_CONTEXT_CHARS_PER_FILE=24000
 ```
 
 The GitHub token needs repository contents write access and pull request access. For private repositories, use a fine-grained token scoped to the target repository.

@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any
 
 import requests
@@ -8,35 +9,67 @@ class CodexUnavailable(RuntimeError):
     pass
 
 
+class CodexTimeout(CodexUnavailable):
+    pass
+
+
 class CodexEngineeringManager:
     """Codex-style planner that turns GitHub issues into reviewable engineering work."""
 
-    def __init__(self, api_key: str, model: str):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        planning_timeout: int = 60,
+        patch_timeout: int = 180,
+        max_retries: int = 2,
+    ):
         self.api_key = api_key
         self.model = model
+        self.planning_timeout = planning_timeout
+        self.patch_timeout = patch_timeout
+        self.max_retries = max_retries
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    def _chat_json(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+    def _chat_json(self, messages: list[dict[str, str]], timeout: int) -> dict[str, Any]:
         if not self.api_key:
             raise CodexUnavailable("OPENAI_API_KEY is required for Codex agent planning.")
-        response = requests.post(
+        response = self._post_with_retries(
             "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json={
+            json_payload={
                 "model": self.model,
                 "messages": messages,
                 "temperature": 0.2,
                 "response_format": {"type": "json_object"},
             },
-            timeout=90,
+            timeout=timeout,
         )
         if response.status_code >= 400:
             raise CodexUnavailable(f"OpenAI API {response.status_code}: {response.text}")
         content = response.json()["choices"][0]["message"]["content"]
         return json.loads(content)
+
+    def _post_with_retries(self, url: str, json_payload: dict[str, Any], timeout: int) -> requests.Response:
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return requests.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    json=json_payload,
+                    timeout=timeout,
+                )
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                time.sleep(1.5 * (attempt + 1))
+        raise CodexTimeout(
+            "Codex timed out while talking to OpenAI. Reduce selected files or retry."
+        ) from last_error
 
     def select_files(
         self,
@@ -78,14 +111,21 @@ class CodexEngineeringManager:
                         f"Select at most {max_files} files."
                     ),
                 },
-            ]
+            ],
+            timeout=self.planning_timeout,
         )
 
-    def generate_patch(self, issue: dict[str, Any], file_payloads: list[dict[str, str]]) -> dict[str, Any]:
+    def generate_patch(
+        self,
+        issue: dict[str, Any],
+        file_payloads: list[dict[str, str]],
+        max_context_chars_per_file: int,
+    ) -> dict[str, Any]:
         files_text = []
         for file_payload in file_payloads:
+            content = _trim_content(file_payload["content"], max_context_chars_per_file)
             files_text.append(
-                f"--- FILE: {file_payload['path']} ---\n{file_payload['content']}\n--- END FILE ---"
+                f"--- FILE: {file_payload['path']} ---\n{content}\n--- END FILE ---"
             )
         return self._chat_json(
             [
@@ -110,5 +150,18 @@ class CodexEngineeringManager:
                         + "\n\n".join(files_text)
                     ),
                 },
-            ]
+            ],
+            timeout=self.patch_timeout,
         )
+
+
+def _trim_content(content: str, max_chars: int) -> str:
+    if len(content) <= max_chars:
+        return content
+    head_chars = max_chars // 2
+    tail_chars = max_chars - head_chars
+    return (
+        content[:head_chars]
+        + "\n\n# ... content trimmed for Codex context budget ...\n\n"
+        + content[-tail_chars:]
+    )

@@ -49,12 +49,16 @@ class GitHubCTOWorkflow:
         planner: CodexEngineeringManager,
         max_repo_files: int,
         max_file_bytes: int,
+        max_selected_files: int,
+        max_context_chars_per_file: int,
         repo_index: RepositoryIndex | None = None,
     ):
         self.github = github
         self.planner = planner
         self.max_repo_files = max_repo_files
         self.max_file_bytes = max_file_bytes
+        self.max_selected_files = max_selected_files
+        self.max_context_chars_per_file = max_context_chars_per_file
         self.repo_index = repo_index
 
     def issue_context(self, issue_number: int) -> dict[str, Any]:
@@ -85,7 +89,7 @@ class GitHubCTOWorkflow:
         context_source = "vector_index" if indexed_files else "repo_tree"
         if not self.planner.enabled:
             return {
-                "files": files[:8],
+                "files": files[: self.max_selected_files],
                 "reasoning": "Codex planning is disabled because OPENAI_API_KEY is not configured. Showing top repository files only.",
                 "root_cause_justification": "",
                 "intent": intent,
@@ -101,12 +105,13 @@ class GitHubCTOWorkflow:
         plan = self.planner.select_files(
             issue,
             files,
+            max_files=self.max_selected_files,
             intent=intent.__dict__,
             evidence=[hit.__dict__ for hit in evidence_hits],
         )
         selected = [path for path in plan.get("files", []) if path in files]
         return {
-            "files": selected[:5],
+            "files": selected[: self.max_selected_files],
             "reasoning": plan.get("reasoning", ""),
             "root_cause_justification": plan.get("root_cause_justification", ""),
             "intent": intent,
@@ -168,14 +173,18 @@ class GitHubCTOWorkflow:
 
         if selected_files is None:
             selected_files = self.plan_files(issue_number)["files"]
+        selected_files = (selected_files or [])[: self.max_selected_files]
 
         fetched = []
         for path in selected_files or []:
             payload = self.github.get_file(path, ref=base_branch)
-            if len(payload["content"].encode("utf-8")) <= self.max_file_bytes:
-                fetched.append(payload)
+            fetched.append(payload)
 
-        patch = self.planner.generate_patch(issue, fetched)
+        patch = self.planner.generate_patch(
+            issue,
+            fetched,
+            max_context_chars_per_file=self.max_context_chars_per_file,
+        )
         raw_changes = patch.get("changes", [])
         if not raw_changes:
             raise RuntimeError("AI did not produce any file changes.")

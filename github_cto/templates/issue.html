@@ -74,6 +74,7 @@
         {% else %}
           <div class="empty">No candidate files were selected. Codex can still propose new files or ask for broader context.</div>
         {% endfor %}
+        <small class="form-hint">Tip: if Codex times out, uncheck less relevant files and retry.</small>
         <button class="primary danger-zone" type="submit" {% if not has_openai_key %}disabled{% endif %}>
           <span class="button-label">Ask Codex To Generate Proposal</span>
         </button>

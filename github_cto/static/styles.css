@@ -473,6 +473,12 @@ button.loading::before {
   margin-top: 4px;
 }
 
+.form-hint {
+  color: var(--muted);
+  display: block;
+  line-height: 1.4;
+}
+
 .issue-body {
   background: #151a18;
   border-radius: 20px;

@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
-from .ai import CodexEngineeringManager
+from .ai import CodexEngineeringManager, CodexTimeout
 from .config import Config
 from .github_client import GitHubClient, GitHubError
 from .index_jobs import IndexJobRegistry
@@ -36,12 +36,20 @@ def create_app() -> Flask:
 
     def make_workflow() -> GitHubCTOWorkflow:
         github = make_github()
-        planner = CodexEngineeringManager(app.config["OPENAI_API_KEY"], app.config["OPENAI_MODEL"])
+        planner = CodexEngineeringManager(
+            app.config["OPENAI_API_KEY"],
+            app.config["OPENAI_MODEL"],
+            planning_timeout=app.config["OPENAI_PLANNING_TIMEOUT"],
+            patch_timeout=app.config["OPENAI_PATCH_TIMEOUT"],
+            max_retries=app.config["OPENAI_MAX_RETRIES"],
+        )
         return GitHubCTOWorkflow(
             github=github,
             planner=planner,
             max_repo_files=app.config["MAX_REPO_FILES"],
             max_file_bytes=app.config["MAX_FILE_BYTES"],
+            max_selected_files=app.config["MAX_SELECTED_FILES"],
+            max_context_chars_per_file=app.config["MAX_CONTEXT_CHARS_PER_FILE"],
             repo_index=make_repo_index(),
         )
 
@@ -206,6 +214,10 @@ def create_app() -> Flask:
             app.logger.info("Proposal generated issue=%s proposal_id=%s changes=%s", issue_number, proposal_id, len(proposal.get("changes", [])))
             flash("Codex proposal generated. Review the diffs before creating the PR.", "success")
             return redirect(url_for("review_proposal", proposal_id=proposal_id))
+        except CodexTimeout as exc:
+            app.logger.warning("Proposal generation timed out issue=%s: %s", issue_number, exc)
+            flash("Codex timed out while generating the proposal. Reduce selected files or retry.", "error")
+            return redirect(url_for("issue_detail", issue_number=issue_number))
         except Exception as exc:
             app.logger.exception("Proposal generation failed issue=%s", issue_number)
             flash(str(exc), "error")
