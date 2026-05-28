@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,6 +15,26 @@ def safe_branch_name(issue_number: int, title: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")[:48] or "issue"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"codex/issue-{issue_number}-{slug}-{stamp}"
+
+
+def _local_file_summary(path: str, content: str) -> str:
+    lines = content.splitlines()
+    symbols = []
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if re.match(r"^(def|class)\s+\w+", stripped):
+            symbols.append(f"line {line_number}: {stripped}")
+        elif "@app.route" in stripped or "Blueprint(" in stripped or "url_for(" in stripped:
+            symbols.append(f"line {line_number}: {stripped[:140]}")
+        if len(symbols) >= 24:
+            break
+    symbol_text = "\n".join(symbols) if symbols else "No obvious Python symbols/routes/forms detected."
+    return (
+        f"path: {path}\n"
+        f"lines: {len(lines)}\n"
+        f"chars: {len(content)}\n"
+        f"notable symbols/routes/forms:\n{symbol_text}"
+    )
 
 
 def codex_timeline(stage: str, **extra: Any) -> list[dict[str, str]]:
@@ -49,16 +70,22 @@ class GitHubCTOWorkflow:
         planner: CodexEngineeringManager,
         max_repo_files: int,
         max_file_bytes: int,
+        default_selected_files: int,
         max_selected_files: int,
         max_context_chars_per_file: int,
+        max_parallel_fetches: int = 6,
+        enable_file_summaries: bool = True,
         repo_index: RepositoryIndex | None = None,
     ):
         self.github = github
         self.planner = planner
         self.max_repo_files = max_repo_files
         self.max_file_bytes = max_file_bytes
+        self.default_selected_files = default_selected_files
         self.max_selected_files = max_selected_files
         self.max_context_chars_per_file = max_context_chars_per_file
+        self.max_parallel_fetches = max_parallel_fetches
+        self.enable_file_summaries = enable_file_summaries
         self.repo_index = repo_index
 
     def issue_context(self, issue_number: int) -> dict[str, Any]:
@@ -89,7 +116,7 @@ class GitHubCTOWorkflow:
         context_source = "vector_index" if indexed_files else "repo_tree"
         if not self.planner.enabled:
             return {
-                "files": files[: self.max_selected_files],
+                "files": files[: self.default_selected_files],
                 "reasoning": "Codex planning is disabled because OPENAI_API_KEY is not configured. Showing top repository files only.",
                 "root_cause_justification": "",
                 "intent": intent,
@@ -111,7 +138,7 @@ class GitHubCTOWorkflow:
         )
         selected = [path for path in plan.get("files", []) if path in files]
         return {
-            "files": selected[: self.max_selected_files],
+            "files": selected[: self.default_selected_files],
             "reasoning": plan.get("reasoning", ""),
             "root_cause_justification": plan.get("root_cause_justification", ""),
             "intent": intent,
@@ -119,7 +146,7 @@ class GitHubCTOWorkflow:
             "ai_enabled": True,
             "timeline": codex_timeline(
                 "context",
-                selected_files=len(selected[: self.max_selected_files]),
+                selected_files=len(selected[: self.default_selected_files]),
                 context_source=context_source,
                 intent=intent.kind,
                 evidence_hits=len(evidence_hits),
@@ -175,10 +202,7 @@ class GitHubCTOWorkflow:
             selected_files = self.plan_files(issue_number)["files"]
         selected_files = (selected_files or [])[: self.max_selected_files]
 
-        fetched = []
-        for path in selected_files or []:
-            payload = self.github.get_file(path, ref=base_branch)
-            fetched.append(payload)
+        fetched = self._proposal_context_files(selected_files, base_branch)
 
         patch = self.planner.generate_patch(
             issue,
@@ -202,6 +226,12 @@ class GitHubCTOWorkflow:
                     original = self.github.get_file(path, ref=base_branch)
                 except Exception:
                     original = None
+            if original and len(original.get("content", "")) > self.max_context_chars_per_file:
+                if len(content) < max(200, int(len(original["content"]) * 0.55)):
+                    raise RuntimeError(
+                        f"Codex returned partial-looking content for large file {path}. "
+                        "Reduce selected files or increase MAX_CONTEXT_CHARS_PER_FILE and retry."
+                    )
             changes.append(
                 {
                     "path": path,
@@ -236,6 +266,30 @@ class GitHubCTOWorkflow:
                 "timeline": codex_timeline("review", proposed_files=len(changes), base_branch=base_branch),
             },
         }
+
+    def _proposal_context_files(self, selected_files: list[str], branch: str) -> list[dict[str, str]]:
+        repo = self.github.repo.full_name
+        indexed_context: dict[str, list[str]] = {}
+        if self.repo_index:
+            for chunk in self.repo_index.chunks_for_paths(repo, branch, selected_files, max_chunks_per_file=2):
+                indexed_context.setdefault(chunk["path"], []).append(
+                    f"# lines {chunk['start_line']}-{chunk['end_line']}\n{chunk['content']}"
+                )
+
+        payloads_by_path: dict[str, dict[str, str]] = {}
+        with ThreadPoolExecutor(max_workers=max(1, self.max_parallel_fetches)) as executor:
+            futures = {executor.submit(self.github.get_file, path, branch): path for path in selected_files}
+            for future in as_completed(futures):
+                path = futures[future]
+                payload = future.result()
+                payload["context_mode"] = "full_file_parallel"
+                if self.enable_file_summaries:
+                    payload["summary"] = _local_file_summary(path, payload["content"])
+                if path in indexed_context:
+                    payload["indexed_snippets"] = "\n\n".join(indexed_context[path])
+                payloads_by_path[path] = payload
+
+        return [payloads_by_path[path] for path in selected_files if path in payloads_by_path]
 
     def create_pr_from_proposal(self, proposal: dict[str, Any]) -> dict[str, Any]:
         issue = proposal["issue"]

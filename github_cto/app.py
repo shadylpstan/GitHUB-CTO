@@ -48,8 +48,11 @@ def create_app() -> Flask:
             planner=planner,
             max_repo_files=app.config["MAX_REPO_FILES"],
             max_file_bytes=app.config["MAX_FILE_BYTES"],
+            default_selected_files=app.config["DEFAULT_SELECTED_FILES"],
             max_selected_files=app.config["MAX_SELECTED_FILES"],
             max_context_chars_per_file=app.config["MAX_CONTEXT_CHARS_PER_FILE"],
+            max_parallel_fetches=app.config["MAX_PARALLEL_FETCHES"],
+            enable_file_summaries=app.config["ENABLE_FILE_SUMMARIES"],
             repo_index=make_repo_index(),
         )
 

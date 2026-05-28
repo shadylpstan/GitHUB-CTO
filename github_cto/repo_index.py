@@ -266,6 +266,30 @@ class RepositoryIndex:
         ranked = sorted(best_by_path.items(), key=lambda item: item[1], reverse=True)
         return [path for path, _ in ranked[:limit]]
 
+    def chunks_for_paths(self, repo: str, branch: str, paths: list[str], max_chunks_per_file: int = 2) -> list[dict[str, Any]]:
+        if not paths:
+            return []
+        placeholders = ",".join("?" for _ in paths)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT path, sha, language, start_line, end_line, content
+                FROM chunks
+                WHERE repo = ? AND branch = ? AND path IN ({placeholders})
+                ORDER BY path, start_line
+                """,
+                (repo, branch, *paths),
+            ).fetchall()
+
+        by_path: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            by_path[row["path"]].append(dict(row))
+
+        selected = []
+        for path in paths:
+            selected.extend(by_path.get(path, [])[:max_chunks_per_file])
+        return selected
+
     def _chunk_file(self, path: str, sha: str, content: str) -> list[dict[str, Any]]:
         lines = content.splitlines()
         if not lines:

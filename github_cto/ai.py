@@ -137,8 +137,16 @@ class CodexEngineeringManager:
         files_text = []
         for file_payload in file_payloads:
             content = _trim_content(file_payload["content"], max_context_chars_per_file)
+            context_mode = file_payload.get("context_mode", "full_file")
+            summary = file_payload.get("summary", "")
+            indexed_snippets = file_payload.get("indexed_snippets", "")
+            extras = ""
+            if summary:
+                extras += f"\n# Local structural summary\n{summary}\n"
+            if indexed_snippets:
+                extras += f"\n# Retrieved index snippets\n{indexed_snippets}\n"
             files_text.append(
-                f"--- FILE: {file_payload['path']} ---\n{content}\n--- END FILE ---"
+                f"--- FILE: {file_payload['path']} ({context_mode}) ---{extras}\n{content}\n--- END FILE ---"
             )
         return self._chat_json(
             [
@@ -151,6 +159,9 @@ class CodexEngineeringManager:
                         "Return JSON only with keys: summary, test_plan, changes. "
                         "changes must be an array of objects with path and full_content. "
                         "Include modified existing files and any new files needed to satisfy the issue. "
+                        "The main file content may be trimmed for large files, but summaries and retrieved snippets "
+                        "are provided to preserve orientation. If a safe full-file replacement is not possible, "
+                        "avoid changing that file and explain in the summary. "
                         "Preserve style and avoid unrelated rewrites. Do not delete files."
                     ),
                 },

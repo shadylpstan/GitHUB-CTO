@@ -16,7 +16,10 @@ class Config:
     OPENAI_PLANNING_TIMEOUT = int(os.getenv("OPENAI_PLANNING_TIMEOUT", "60"))
     OPENAI_PATCH_TIMEOUT = int(os.getenv("OPENAI_PATCH_TIMEOUT", "180"))
     OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+    DEFAULT_SELECTED_FILES = int(os.getenv("DEFAULT_SELECTED_FILES", "5"))
     MAX_SELECTED_FILES = int(os.getenv("MAX_SELECTED_FILES", "8"))
-    MAX_CONTEXT_CHARS_PER_FILE = int(os.getenv("MAX_CONTEXT_CHARS_PER_FILE", "24000"))
+    MAX_CONTEXT_CHARS_PER_FILE = int(os.getenv("MAX_CONTEXT_CHARS_PER_FILE", "12000"))
+    MAX_PARALLEL_FETCHES = int(os.getenv("MAX_PARALLEL_FETCHES", "6"))
+    ENABLE_FILE_SUMMARIES = os.getenv("ENABLE_FILE_SUMMARIES", "true").lower() == "true"
     MAX_REPO_FILES = int(os.getenv("MAX_REPO_FILES", "350"))
     MAX_FILE_BYTES = int(os.getenv("MAX_FILE_BYTES", "20000"))
