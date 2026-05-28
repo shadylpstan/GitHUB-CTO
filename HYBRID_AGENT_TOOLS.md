@@ -21,3 +21,13 @@ Issue -> model identifies intent -> app chooses deterministic tool -> tool edits
 ```
 
 The experimental iterative patch UI is hidden from the issue screen while this safer path is developed.
+
+## Aider Backend
+
+The Flask app can also hand an issue to Aider:
+
+```text
+Issue -> selected files -> isolated temp git workspace -> aider CLI edits files -> Flask captures git diff -> review proposal
+```
+
+This avoids asking OpenAI to return perfect JSON patches. Aider owns the file-editing loop; Flask owns review and PR creation.

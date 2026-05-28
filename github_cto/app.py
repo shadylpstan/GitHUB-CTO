@@ -7,6 +7,7 @@ from logging.handlers import RotatingFileHandler
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 from .agent_loop import AgentLoopConfig, IterativeAgentLoop
+from .aider_backend import AiderBackend, AiderConfig, AiderRunError
 from .ai import CodexEngineeringManager, CodexTimeout, CodexTransientError
 from .config import Config
 from .github_client import GitHubClient, GitHubError
@@ -74,6 +75,18 @@ def create_app() -> Flask:
                 openai_timeout=app.config["AGENT_OPENAI_TIMEOUT"],
                 openai_max_retries=app.config["AGENT_OPENAI_MAX_RETRIES"],
                 max_context_chars_per_file=min(app.config["MAX_CONTEXT_CHARS_PER_FILE"], 6000),
+            ),
+        )
+
+    def make_aider_backend() -> AiderBackend:
+        return AiderBackend(
+            repo_root=app.root_path + "/..",
+            workspace_root=app.instance_path + "/aider_runs",
+            config=AiderConfig(
+                command=app.config["AIDER_COMMAND"],
+                model=app.config["AIDER_MODEL"],
+                timeout=app.config["AIDER_TIMEOUT"],
+                test_command=app.config["AIDER_TEST_COMMAND"],
             ),
         )
 
@@ -268,6 +281,44 @@ def create_app() -> Flask:
             flash(str(exc), "error")
             return redirect(url_for("issue_detail", issue_number=issue_number))
 
+    @app.route("/issues/<int:issue_number>/aider-run", methods=["POST"])
+    def run_aider(issue_number: int):
+        selected_files = request.form.getlist("files")
+        try:
+            app.logger.info("Starting Aider run issue=%s selected_files=%s", issue_number, len(selected_files))
+            workflow = make_workflow()
+            context = workflow.issue_context(issue_number)
+            issue = context["issue"]
+            comments = context["comments"]
+            triage = context["triage"]
+            if not selected_files:
+                selected_files = workflow.plan_files(issue_number)["files"]
+            result = make_aider_backend().run_issue(
+                issue=issue,
+                comments=comments,
+                selected_files=selected_files,
+                openai_api_key=app.config["OPENAI_API_KEY"],
+            )
+            proposal = _proposal_from_aider_result(workflow, issue, triage, result)
+            proposal_id = proposal_store().save(proposal)
+            app.logger.info(
+                "Aider run completed issue=%s proposal_id=%s changes=%s run_id=%s",
+                issue_number,
+                proposal_id,
+                len(proposal.get("changes", [])),
+                result.get("run_id"),
+            )
+            flash("Aider generated file changes. Review the diffs before creating the PR.", "success")
+            return redirect(url_for("review_proposal", proposal_id=proposal_id))
+        except AiderRunError as exc:
+            app.logger.warning("Aider run failed issue=%s: %s", issue_number, exc)
+            flash(str(exc), "error")
+            return redirect(url_for("issue_detail", issue_number=issue_number))
+        except Exception as exc:
+            app.logger.exception("Aider run failed issue=%s", issue_number)
+            flash(str(exc), "error")
+            return redirect(url_for("issue_detail", issue_number=issue_number))
+
     @app.route("/issues/<int:issue_number>/agent-run", methods=["POST"])
     def run_agent_loop(issue_number: int):
         selected_files = request.form.getlist("files")
@@ -407,6 +458,71 @@ def _merge_retry_result(proposal: dict, retry_result: dict, retried_path: str) -
     codex = proposal.setdefault("codex", {})
     codex["agent"] = codex.get("agent") or retry_result.get("codex", {}).get("agent")
     codex["mode"] = "iterative agent with file retry"
+
+
+def _proposal_from_aider_result(
+    workflow: GitHubCTOWorkflow,
+    issue: dict,
+    triage,
+    result: dict,
+) -> dict:
+    base_branch = workflow.github.default_branch()
+    changes = []
+    for change in result.get("changes", []):
+        path = change["path"]
+        try:
+            original = workflow.github.get_file(path, ref=base_branch)
+            original_content = original["content"]
+            sha = original["sha"]
+            status = "modified"
+        except Exception:
+            original_content = ""
+            sha = None
+            status = "new"
+        changes.append(
+            {
+                "path": path,
+                "status": status,
+                "sha": sha,
+                "original_content": original_content,
+                "proposed_content": change["proposed_content"],
+                "unified_diff": change.get("unified_diff", ""),
+            }
+        )
+
+    return {
+        "issue": {"number": issue.get("number"), "title": issue.get("title"), "html_url": issue.get("html_url")},
+        "triage": {
+            "severity": triage.severity,
+            "score": triage.score,
+            "rationale": triage.rationale,
+            "recommended_action": triage.recommended_action,
+        },
+        "patch": {
+            "summary": "Aider generated a reviewable code change for this issue.",
+            "test_plan": "Review the diff and run the configured test suite before merging.",
+            "aider_output": result.get("output", ""),
+            "aider_run_id": result.get("run_id", ""),
+            "aider_workspace": result.get("workspace", ""),
+        },
+        "base_branch": base_branch,
+        "changes": changes,
+        "codex": {
+            "agent": "Aider CLI Backend",
+            "mode": "Flask orchestrated repo-editing CLI",
+            "model": "aider",
+            "timeline": codex_timeline_for_aider(len(changes), result.get("run_id", "")),
+        },
+    }
+
+
+def codex_timeline_for_aider(changed_files: int, run_id: str) -> list[dict[str, str]]:
+    return [
+        {"key": "intake", "title": "Read GitHub issue", "detail": "Loaded issue and comments from GitHub.", "status": "done"},
+        {"key": "context", "title": "Select code context", "detail": "Used selected files as Aider chat context.", "status": "done"},
+        {"key": "edit", "title": "Run Aider", "detail": f"Aider edited files in isolated workspace {run_id}.", "status": "done"},
+        {"key": "review", "title": "Human checkpoint", "detail": f"{changed_files} changed file(s) ready for review.", "status": "active"},
+    ]
 
 
 def _run_index_rebuild(app: Flask, index_jobs: IndexJobRegistry, token: str, repo_name: str) -> None:

@@ -47,6 +47,10 @@ AGENT_TEST_COMMAND=
 AGENT_TEST_TIMEOUT=90
 AGENT_OPENAI_TIMEOUT=60
 AGENT_OPENAI_MAX_RETRIES=0
+AIDER_COMMAND=aider
+AIDER_MODEL=gpt-4.1-mini
+AIDER_TIMEOUT=600
+AIDER_TEST_COMMAND=
 ```
 
 The GitHub token needs repository contents write access and pull request access. For private repositories, use a fine-grained token scoped to the target repository.
@@ -58,6 +62,13 @@ python app.py
 ```
 
 Open `http://127.0.0.1:5050`.
+
+By default the Flask debug reloader is off because Aider runs subprocesses and creates temporary workspaces. To enable Flask debug mode explicitly:
+
+```powershell
+$env:FLASK_DEBUG="true"
+python app.py
+```
 
 If you want a different port:
 
@@ -101,6 +112,7 @@ The index intentionally skips noisy/generated files such as `__pycache__`, `node
 - `Fast Proposal`: Codex first creates an edit plan, then generates compact unified diffs for the smallest likely file set.
 - `Deep Proposal`: Codex skips the edit-plan narrowing step and patches the selected files directly.
 - `Iterative Agent Run`: Codex makes one small edit step at a time, applies each step to an agent workspace, optionally runs `AGENT_TEST_COMMAND` in a temporary copy, and stops at a final review checkpoint.
+- `Aider Run`: Flask runs the Aider CLI in an isolated temporary git workspace, captures the resulting file changes, and shows them in the normal proposal review UI.
 
 The app logs proposal mode, selected files, planned files, context files, and generated changes to `instance/github_cto.log`.
 

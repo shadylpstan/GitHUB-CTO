@@ -64,6 +64,16 @@
         {% endfor %}
       </ol>
     </section>
+    {% endif %}
+
+  {% if proposal.patch.aider_output %}
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Aider Run Output</h2>
+        <p>Captured from the isolated CLI workspace.</p>
+      </div>
+      <pre class="issue-body">{{ proposal.patch.aider_output }}</pre>
+    </section>
   {% endif %}
 
   <form method="post" action="{{ url_for('create_pr_from_proposal', proposal_id=proposal.id) }}" class="review-form" target="_blank" data-loading="Creating reviewed PR...">

@@ -42,7 +42,7 @@
       document.addEventListener("submit", (event) => {
         const form = event.target;
         if (!(form instanceof HTMLFormElement) || !form.dataset.loading) return;
-        const button = form.querySelector("button[type='submit']");
+        const button = event.submitter || form.querySelector("button[type='submit']");
         if (!button) return;
         button.disabled = true;
         button.classList.add("loading");

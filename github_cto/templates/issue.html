@@ -82,6 +82,9 @@
           <button class="secondary" type="submit" name="proposal_mode" value="deep" {% if not has_openai_key %}disabled{% endif %}>
             Deep Proposal
           </button>
+          <button class="primary" type="submit" formaction="{{ url_for('run_aider', issue_number=issue.number) }}" {% if not has_openai_key %}disabled{% endif %}>
+            <span class="button-label">Aider Run</span>
+          </button>
         </div>
       </form>
     </article>
