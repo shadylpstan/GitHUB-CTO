@@ -44,9 +44,13 @@ class CodexEngineeringManager:
         files: list[str],
         max_files: int = 5,
         intent: dict[str, Any] | None = None,
+        evidence: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         file_listing = "\n".join(files[:800])
         intent = intent or {"kind": "unknown", "rationale": "No intent classification provided."}
+        evidence_text = "\n".join(
+            f"- {item.get('path')}: {item.get('reason')}" for item in (evidence or [])[:12]
+        )
         return self._chat_json(
             [
                 {
@@ -57,6 +61,8 @@ class CodexEngineeringManager:
                         "choose context deliberately, and prepare safe code changes for human review. "
                         "For framework/library bugs, prefer root-cause implementation and tests over docs, examples, "
                         "tutorials, or reproduction snippets. Avoid selecting files that only patch the symptom. "
+                        "For UI/application issues, prefer templates/routes that contain the existing related control "
+                        "or route, not generic filenames. Use evidence notes as stronger signal than filename similarity. "
                         "Return JSON with keys: files (array of paths), reasoning, root_cause_justification. "
                         "root_cause_justification should explain why the chosen files are likely responsible for the behavior."
                     ),
@@ -67,6 +73,7 @@ class CodexEngineeringManager:
                         f"Issue title: {issue.get('title')}\n\n"
                         f"Issue body:\n{issue.get('body') or ''}\n\n"
                         f"Classified intent: {intent.get('kind')} ({intent.get('rationale')})\n\n"
+                        f"Evidence from content search:\n{evidence_text or 'No content evidence available.'}\n\n"
                         f"Repository files:\n{file_listing}\n\n"
                         f"Select at most {max_files} files."
                     ),

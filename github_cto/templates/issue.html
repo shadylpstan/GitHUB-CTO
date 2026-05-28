@@ -44,6 +44,14 @@
           <span>{{ plan.root_cause_justification }}</span>
         </div>
       {% endif %}
+      {% if plan.evidence %}
+        <div class="context-note">
+          <strong>Evidence-ranked files</strong>
+          {% for hit in plan.evidence[:4] %}
+            <span>{{ hit.path }}: {{ hit.reason }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
       {% if not has_openai_key %}
         <div class="flash error">Set OPENAI_API_KEY in your environment to enable Codex agent planning.</div>
       {% endif %}

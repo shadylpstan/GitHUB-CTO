@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .ai import CodexEngineeringManager
+from .evidence import evidence_rank
 from .github_client import GitHubClient, is_probably_text_file
 from .intent import architectural_rank, classify_issue_intent
 from .repo_index import RepositoryIndex
@@ -77,7 +78,10 @@ class GitHubCTOWorkflow:
         issue = self.github.get_issue(issue_number)
         intent = classify_issue_intent(issue)
         indexed_files = self._indexed_candidate_files(issue)
-        files = architectural_rank(indexed_files or self.candidate_files(), intent)
+        base_files = indexed_files or self.candidate_files()
+        evidence_hits = self._evidence_hits(issue, base_files)
+        evidence_scores = {hit.path: hit.score for hit in evidence_hits}
+        files = architectural_rank(base_files, intent, evidence_scores=evidence_scores)
         context_source = "vector_index" if indexed_files else "repo_tree"
         if not self.planner.enabled:
             return {
@@ -85,22 +89,35 @@ class GitHubCTOWorkflow:
                 "reasoning": "Codex planning is disabled because OPENAI_API_KEY is not configured. Showing top repository files only.",
                 "root_cause_justification": "",
                 "intent": intent,
+                "evidence": evidence_hits[:8],
                 "ai_enabled": False,
-                "timeline": codex_timeline("context", context_source=context_source, intent=intent.kind),
+                "timeline": codex_timeline(
+                    "context",
+                    context_source=context_source,
+                    intent=intent.kind,
+                    evidence_hits=len(evidence_hits),
+                ),
             }
-        plan = self.planner.select_files(issue, files, intent=intent.__dict__)
+        plan = self.planner.select_files(
+            issue,
+            files,
+            intent=intent.__dict__,
+            evidence=[hit.__dict__ for hit in evidence_hits],
+        )
         selected = [path for path in plan.get("files", []) if path in files]
         return {
             "files": selected[:5],
             "reasoning": plan.get("reasoning", ""),
             "root_cause_justification": plan.get("root_cause_justification", ""),
             "intent": intent,
+            "evidence": evidence_hits[:8],
             "ai_enabled": True,
             "timeline": codex_timeline(
                 "context",
                 selected_files=len(selected[:5]),
                 context_source=context_source,
                 intent=intent.kind,
+                evidence_hits=len(evidence_hits),
             ),
         }
 
@@ -118,6 +135,27 @@ class GitHubCTOWorkflow:
         indexed_set = set(indexed_paths)
         remaining = [path for path in all_files if path not in indexed_set]
         return indexed_paths + remaining[: max(0, self.max_repo_files - len(indexed_paths))]
+
+    def _evidence_hits(self, issue: dict[str, Any], files: list[str]) -> list[Any]:
+        issue_text = f"{issue.get('title') or ''}\n\n{issue.get('body') or ''}"
+        branch = self.github.default_branch()
+        cache: dict[str, str | None] = {}
+
+        def fetch(path: str) -> str | None:
+            if path in cache:
+                return cache[path]
+            try:
+                payload = self.github.get_file(path, ref=branch)
+                content = payload["content"]
+                if len(content.encode("utf-8")) > self.max_file_bytes:
+                    cache[path] = None
+                else:
+                    cache[path] = content
+            except Exception:
+                cache[path] = None
+            return cache[path]
+
+        return evidence_rank(files, issue_text, fetch_content=fetch)
 
     def generate_proposal(self, issue_number: int, selected_files: list[str] | None = None) -> dict[str, Any]:
         if not self.planner.enabled:

@@ -29,8 +29,9 @@ def classify_issue_intent(issue: dict[str, Any]) -> IssueIntent:
     return IssueIntent("unknown", 0.45, "Issue intent is ambiguous.")
 
 
-def architectural_rank(paths: list[str], intent: IssueIntent) -> list[str]:
-    scored = [(path, _path_score(path, intent)) for path in paths]
+def architectural_rank(paths: list[str], intent: IssueIntent, evidence_scores: dict[str, int] | None = None) -> list[str]:
+    evidence_scores = evidence_scores or {}
+    scored = [(path, _path_score(path, intent) + evidence_scores.get(path, 0)) for path in paths]
     scored.sort(key=lambda item: item[1], reverse=True)
     return [path for path, _ in scored]
 
