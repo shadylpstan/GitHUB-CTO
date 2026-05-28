@@ -63,6 +63,18 @@ class IterativeAgentLoop:
             test_plan = agent_step.get("test_plan") or test_plan
 
             if status == "complete":
+                if not self._has_changes(originals, workspace):
+                    test_output = "Agent said complete, but no file changes exist yet. Choose one concrete edit."
+                    steps.append(
+                        {
+                            "step": step_number,
+                            "action": "complete_without_changes",
+                            "status": "blocked",
+                            "summary": summary,
+                            "observation": test_output,
+                        }
+                    )
+                    continue
                 steps.append(
                     {
                         "step": step_number,
@@ -82,7 +94,43 @@ class IterativeAgentLoop:
                 if path not in selected:
                     selected.append(path)
 
-            proposed = self._apply_step(path, original["content"], agent_step)
+            try:
+                proposed = self._apply_step(path, original["content"], agent_step)
+            except RuntimeError as exc:
+                test_output = (
+                    f"Patch was rejected before tests ran: {exc}\n"
+                    "Return a corrected unified diff with numeric hunk headers, or return full_content."
+                )
+                steps.append(
+                    {
+                        "step": step_number,
+                        "action": "patch_rejected",
+                        "status": "blocked",
+                        "path": path,
+                        "summary": summary,
+                        "observation": test_output,
+                    }
+                )
+                try:
+                    repair = self.workflow.planner.generate_full_file_step(
+                        issue,
+                        original,
+                        history=steps,
+                        observation=test_output,
+                        max_context_chars=max(self.config.max_context_chars_per_file, 12000),
+                    )
+                    repaired_path = self._safe_path(repair.get("path") or path)
+                    if repaired_path != path:
+                        raise RuntimeError(f"Full-content repair returned a different path: {repaired_path}")
+                    proposed = repair.get("full_content")
+                    if proposed is None:
+                        raise RuntimeError("Full-content repair did not return full_content.")
+                    summary = repair.get("summary") or summary
+                    test_plan = repair.get("test_plan") or test_plan
+                except Exception as repair_exc:
+                    test_output = f"{test_output}\nFull-content repair also failed: {repair_exc}"
+                    steps[-1]["observation"] = test_output
+                    continue
             workspace[path]["content"] = proposed
             workspace[path]["proposed_content"] = proposed
             workspace[path]["context_mode"] = "agent_workspace"
@@ -152,6 +200,8 @@ class IterativeAgentLoop:
     def _apply_step(self, path: str, original_content: str, agent_step: dict[str, Any]) -> str:
         if agent_step.get("new_file_content") is not None:
             return agent_step["new_file_content"]
+        if agent_step.get("full_content") is not None:
+            return agent_step["full_content"]
         diff = agent_step.get("unified_diff") or ""
         if not diff.strip():
             raise RuntimeError(f"Agent step for {path} did not include a patch.")
@@ -222,3 +272,12 @@ class IterativeAgentLoop:
                 }
             )
         return changes
+
+    def _has_changes(self, originals: list[dict[str, Any]], workspace: dict[str, dict[str, Any]]) -> bool:
+        original_by_path = {item["path"]: item for item in originals}
+        for path, payload in workspace.items():
+            original = original_by_path.get(path)
+            before = original["content"] if original else ""
+            if before != payload["content"]:
+                return True
+        return False

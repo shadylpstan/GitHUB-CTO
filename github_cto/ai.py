@@ -279,10 +279,13 @@ class CodexEngineeringManager:
                         "You are a Codex-style coding agent working in small safe steps. "
                         "Do not try to rewrite the whole PR at once. Choose exactly one next action. "
                         "Return JSON only. Schema: "
-                        "{status, summary, action, path, unified_diff, new_file_content, test_plan}. "
+                        "{status, summary, action, path, unified_diff, full_content, new_file_content, test_plan}. "
                         "status must be continue or complete. "
                         "If more work is needed, status=continue and action=edit_file. "
                         "For existing files, provide a valid unified_diff with exact context from the provided file. "
+                        "Unified diff hunk headers must use real line numbers, such as @@ -10,7 +10,9 @@. "
+                        "Never use symbolic hunk headers like @@ class Foo:. "
+                        "If you cannot produce a valid unified diff, provide full_content for the complete final file instead. "
                         "For new files, provide new_file_content. "
                         "If the issue appears fixed or no safe next edit exists, status=complete. "
                         "Keep edits minimal and preserve style."
@@ -297,6 +300,45 @@ class CodexEngineeringManager:
                         f"Latest test output or observation:\n{test_output or 'No tests have run yet.'}\n\n"
                         "Current files:\n\n"
                         + "\n\n".join(files_text)
+                    ),
+                },
+            ],
+            timeout=self.patch_timeout,
+        )
+
+    def generate_full_file_step(
+        self,
+        issue: dict[str, Any],
+        file_payload: dict[str, str],
+        history: list[dict[str, Any]],
+        observation: str,
+        max_context_chars: int = 12000,
+    ) -> dict[str, Any]:
+        content = _trim_content(file_payload["content"], max_context_chars)
+        history_text = "\n".join(
+            f"- step {item.get('step')}: {item.get('action')} {item.get('path', '')} - {item.get('summary', '')}"
+            for item in history[-8:]
+        )
+        return self._chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are repairing a failed small-step patch. "
+                        "Return JSON only with keys: summary, path, full_content, test_plan. "
+                        "Do not return a diff. Return the complete final content for exactly the requested file. "
+                        "Keep the edit minimal and preserve unrelated content."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"GitHub issue #{issue.get('number')}: {issue.get('title')}\n\n"
+                        f"Issue body:\n{issue.get('body') or ''}\n\n"
+                        f"Previous agent steps:\n{history_text or 'No previous steps.'}\n\n"
+                        f"Patch failure observation:\n{observation}\n\n"
+                        f"Return complete final content for this file only: {file_payload['path']}\n\n"
+                        f"--- FILE: {file_payload['path']} ---\n{content}\n--- END FILE ---"
                     ),
                 },
             ],
