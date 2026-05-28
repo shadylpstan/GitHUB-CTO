@@ -742,6 +742,12 @@ button.loading::before {
   min-height: 320px;
 }
 
+.job-actions-ready {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
 .flash-stack {
   display: grid;
   gap: 10px;

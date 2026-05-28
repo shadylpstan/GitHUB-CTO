@@ -5,7 +5,7 @@
   <section class="issue-hero">
     <div>
       <p class="eyebrow">Aider job {{ job.id[:8] }}</p>
-      <h1>Aider is working</h1>
+      <h1 id="job-heading">{{ "Aider finished" if job.state == "complete" else "Aider is working" }}</h1>
       <p class="lede" id="job-message">{{ job.message }}</p>
       <p class="form-hint">Started: {{ job.started_at }}</p>
     </div>
@@ -26,7 +26,10 @@
     </div>
     <pre class="issue-body live-log" id="job-logs">{{ "\n".join(job.logs) or "Waiting for Aider logs..." }}</pre>
     <div id="job-error" class="flash error" {% if not job.error %}hidden{% endif %}>{{ job.error }}</div>
-    <div id="job-actions" class="proposal-actions" {% if job.state not in ["complete", "error"] %}hidden{% endif %}>
+    <div id="job-complete" class="flash success" {% if job.state != "complete" %}hidden{% endif %}>
+      Aider finished. Review the proposal before creating a PR.
+    </div>
+    <div id="job-actions" class="proposal-actions job-actions-ready" {% if job.state not in ["complete", "error"] %}hidden{% endif %}>
       <a class="primary" id="proposal-link" href="#">Review Proposal</a>
       <a class="secondary" href="{{ url_for('issue_detail', issue_number=job.issue_number) }}">Back To Issue</a>
     </div>
@@ -35,11 +38,14 @@
   <script>
     (() => {
       const state = document.getElementById("job-state");
+      const heading = document.getElementById("job-heading");
       const message = document.getElementById("job-message");
       const logs = document.getElementById("job-logs");
       const error = document.getElementById("job-error");
+      const complete = document.getElementById("job-complete");
       const actions = document.getElementById("job-actions");
       const proposalLink = document.getElementById("proposal-link");
+      let completionShown = false;
 
       const poll = async () => {
         const response = await fetch("{{ url_for('aider_job_status', job_id=job.id) }}", { cache: "no-store" });
@@ -55,13 +61,27 @@
           error.textContent = payload.error;
         }
         if (payload.state === "complete" && payload.proposal_id) {
+          heading.textContent = "Aider finished";
+          complete.hidden = false;
           actions.hidden = false;
           proposalLink.hidden = false;
           proposalLink.href = `/proposals/${payload.proposal_id}`;
+          if (!completionShown) {
+            completionShown = true;
+            actions.scrollIntoView({ behavior: "smooth", block: "center" });
+            document.title = "Aider Finished | GitHub CTO";
+          }
         } else if (payload.state === "error") {
+          heading.textContent = "Aider failed";
           actions.hidden = false;
           proposalLink.hidden = true;
+          if (!completionShown) {
+            completionShown = true;
+            actions.scrollIntoView({ behavior: "smooth", block: "center" });
+            document.title = "Aider Failed | GitHub CTO";
+          }
         } else {
+          heading.textContent = "Aider is working";
           window.setTimeout(poll, 1500);
         }
       };
