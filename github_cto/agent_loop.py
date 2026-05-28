@@ -65,10 +65,11 @@ class IterativeAgentLoop:
         for step_number in range(1, self.config.max_steps + 1):
             context_files = [workspace[path] for path in selected if path in workspace]
             logger.info(
-                "Agent step request issue=%s step=%s files=%s timeout=%s",
+                "Agent step request issue=%s step=%s files=%s paths=%s timeout=%s",
                 issue_number,
                 step_number,
                 len(context_files),
+                [item["path"] for item in context_files],
                 self.config.openai_timeout,
             )
             agent_step = self.workflow.planner.generate_agent_step(
@@ -124,12 +125,13 @@ class IterativeAgentLoop:
                 if path not in selected:
                     selected.append(path)
 
+            before_content = original["content"]
             try:
-                proposed = self._apply_step(path, original["content"], agent_step)
+                proposed = self._apply_step(path, before_content, agent_step)
             except RuntimeError as exc:
                 test_output = (
                     f"Patch was rejected before tests ran: {exc}\n"
-                    "Return a corrected unified diff with numeric hunk headers, or return full_content."
+                    "Return full_content for the complete final file with a concrete code change."
                 )
                 steps.append(
                     {
@@ -142,13 +144,18 @@ class IterativeAgentLoop:
                     }
                 )
                 try:
-                    logger.info("Agent full-content repair request issue=%s step=%s path=%s", issue_number, step_number, path)
+                    logger.info(
+                        "Agent full-content repair request issue=%s step=%s path=%s",
+                        issue_number,
+                        step_number,
+                        path,
+                    )
                     repair = self.workflow.planner.generate_full_file_step(
                         issue,
-                        original,
+                        {**original, "content": before_content},
                         history=steps,
                         observation=test_output,
-                        max_context_chars=max(self.config.max_context_chars_per_file, 12000),
+                        max_context_chars=max(self.config.max_context_chars_per_file, 30000),
                         timeout=self.config.openai_timeout,
                     )
                     repaired_path = self._safe_path(repair.get("path") or path)
@@ -163,15 +170,38 @@ class IterativeAgentLoop:
                     test_output = f"{test_output}\nFull-content repair also failed: {repair_exc}"
                     steps[-1]["observation"] = test_output
                     continue
+            if proposed == before_content:
+                test_output = (
+                    f"Agent returned unchanged content for {path}. "
+                    "The next step must make a concrete code change or choose a different file."
+                )
+                logger.info(
+                    "Agent unchanged edit issue=%s step=%s path=%s",
+                    issue_number,
+                    step_number,
+                    path,
+                )
+                steps.append(
+                    {
+                        "step": step_number,
+                        "action": "unchanged_edit",
+                        "status": "blocked",
+                        "path": path,
+                        "summary": summary,
+                        "observation": test_output,
+                    }
+                )
+                continue
             workspace[path]["content"] = proposed
             workspace[path]["proposed_content"] = proposed
             workspace[path]["context_mode"] = "agent_workspace"
 
             test_result = self._run_tests(workspace)
             logger.info(
-                "Agent test result issue=%s step=%s status=%s",
+                "Agent test result issue=%s step=%s path=%s status=%s",
                 issue_number,
                 step_number,
+                path,
                 test_result["status"],
             )
             test_output = test_result["output"]
@@ -191,7 +221,11 @@ class IterativeAgentLoop:
 
         changes = self._changes(originals, workspace)
         if not changes:
-            raise RuntimeError("Agent loop completed without producing file changes.")
+            recent = "; ".join(
+                f"step {step.get('step')} {step.get('action')}: {step.get('observation', step.get('summary', ''))[:180]}"
+                for step in steps[-3:]
+            )
+            raise RuntimeError(f"Agent loop completed without producing file changes. Recent observations: {recent}")
 
         return {
             "issue": {"number": issue.get("number"), "title": issue.get("title"), "html_url": issue.get("html_url")},

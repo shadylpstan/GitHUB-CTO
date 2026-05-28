@@ -283,10 +283,10 @@ class CodexEngineeringManager:
                         "{status, summary, action, path, unified_diff, full_content, new_file_content, test_plan}. "
                         "status must be continue or complete. "
                         "If more work is needed, status=continue and action=edit_file. "
-                        "For existing files, provide a valid unified_diff with exact context from the provided file. "
+                        "For existing files, prefer full_content for the complete final file. "
+                        "Only use unified_diff if you are certain it is valid and can be applied exactly. "
                         "Unified diff hunk headers must use real line numbers, such as @@ -10,7 +10,9 @@. "
                         "Never use symbolic hunk headers like @@ class Foo:. "
-                        "If you cannot produce a valid unified diff, provide full_content for the complete final file instead. "
                         "For new files, provide new_file_content. "
                         "If the issue appears fixed or no safe next edit exists, status=complete. "
                         "Keep edits minimal and preserve style."
@@ -329,6 +329,7 @@ class CodexEngineeringManager:
                         "You are repairing a failed small-step patch. "
                         "Return JSON only with keys: summary, path, full_content, test_plan. "
                         "Do not return a diff. Return the complete final content for exactly the requested file. "
+                        "The full_content must include a concrete code change that addresses the issue. "
                         "Keep the edit minimal and preserve unrelated content."
                     ),
                 },
