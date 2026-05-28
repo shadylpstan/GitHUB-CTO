@@ -330,6 +330,7 @@ class CodexEngineeringManager:
                         "Return JSON only with keys: summary, path, full_content, test_plan. "
                         "Do not return a diff. Return the complete final content for exactly the requested file. "
                         "The full_content must include a concrete code change that addresses the issue. "
+                        "Preserve every existing route, helper, import, and public function unless the issue explicitly asks to remove it. "
                         "Keep the edit minimal and preserve unrelated content."
                     ),
                 },

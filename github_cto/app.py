@@ -295,6 +295,28 @@ def create_app() -> Flask:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
 
+    @app.route("/proposals/<proposal_id>/retry-file", methods=["POST"])
+    def retry_proposal_file(proposal_id: str):
+        path = request.form.get("path", "").strip()
+        if not path:
+            flash("Missing file path to retry.", "error")
+            return redirect(url_for("review_proposal", proposal_id=proposal_id))
+
+        try:
+            store = proposal_store()
+            proposal = store.load(proposal_id)
+            prior_steps = proposal.get("patch", {}).get("agent_steps", [])
+            app.logger.info("Retrying proposal file proposal_id=%s path=%s", proposal_id, path)
+            retry_result = make_agent_loop().retry_file(proposal, path, prior_steps=prior_steps)
+            _merge_retry_result(proposal, retry_result, path)
+            store.update(proposal)
+            flash(f"Retried {path} and merged the result into this proposal.", "success")
+            return redirect(url_for("review_proposal", proposal_id=proposal_id))
+        except Exception as exc:
+            app.logger.exception("Retry proposal file failed proposal_id=%s path=%s", proposal_id, path)
+            flash(str(exc), "error")
+            return redirect(url_for("review_proposal", proposal_id=proposal_id))
+
     @app.route("/proposals/<proposal_id>/create-pr", methods=["POST"])
     def create_pr_from_proposal(proposal_id: str):
         try:
@@ -324,6 +346,46 @@ def create_app() -> Flask:
         return {"status": "ok"}
 
     return app
+
+
+def _merge_retry_result(proposal: dict, retry_result: dict, retried_path: str) -> None:
+    existing_changes = proposal.setdefault("changes", [])
+    replacement_by_path = {change["path"]: change for change in retry_result.get("changes", [])}
+    merged = []
+    seen = set()
+    for change in existing_changes:
+        path = change.get("path")
+        if path in replacement_by_path:
+            merged.append(replacement_by_path[path])
+            seen.add(path)
+        else:
+            merged.append(change)
+            if path:
+                seen.add(path)
+    for path, change in replacement_by_path.items():
+        if path not in seen:
+            merged.append(change)
+    proposal["changes"] = merged
+
+    patch = proposal.setdefault("patch", {})
+    retry_patch = retry_result.get("patch", {})
+    patch["summary"] = retry_patch.get("summary") or patch.get("summary", "")
+    patch["test_plan"] = retry_patch.get("test_plan") or patch.get("test_plan", "")
+    agent_steps = patch.setdefault("agent_steps", [])
+    agent_steps.append(
+        {
+            "step": len(agent_steps) + 1,
+            "action": "retry_file",
+            "status": "done",
+            "path": retried_path,
+            "summary": f"Retried failed file {retried_path}.",
+        }
+    )
+    agent_steps.extend(retry_patch.get("agent_steps", []))
+
+    codex = proposal.setdefault("codex", {})
+    codex["agent"] = codex.get("agent") or retry_result.get("codex", {}).get("agent")
+    codex["mode"] = "iterative agent with file retry"
 
 
 def _run_index_rebuild(app: Flask, index_jobs: IndexJobRegistry, token: str, repo_name: str) -> None:

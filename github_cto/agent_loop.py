@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import ast
+import re
 import shutil
 import subprocess
 import tempfile
@@ -42,7 +44,31 @@ class IterativeAgentLoop:
         finally:
             self.workflow.planner.max_retries = original_retries
 
-    def _run(self, issue_number: int, selected_files: list[str] | None = None) -> dict[str, Any]:
+    def retry_file(
+        self,
+        proposal: dict[str, Any],
+        path: str,
+        prior_steps: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if not self.workflow.planner.enabled:
+            raise RuntimeError("OPENAI_API_KEY is required to retry a file.")
+
+        issue_number = int(proposal["issue"]["number"])
+        original_retries = self.workflow.planner.max_retries
+        self.workflow.planner.max_retries = self.config.openai_max_retries
+        try:
+            retry_result = self._run(issue_number, [path], seed_changes=proposal.get("changes", []), prior_steps=prior_steps or [])
+            return retry_result
+        finally:
+            self.workflow.planner.max_retries = original_retries
+
+    def _run(
+        self,
+        issue_number: int,
+        selected_files: list[str] | None = None,
+        seed_changes: list[dict[str, Any]] | None = None,
+        prior_steps: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         logger.info("Agent loading issue context issue=%s", issue_number)
         context = self.workflow.issue_context(issue_number)
         issue = context["issue"]
@@ -57,7 +83,13 @@ class IterativeAgentLoop:
         originals = self.workflow._proposal_context_files(selected, base_branch)
         logger.info("Agent fetched selected files issue=%s count=%s", issue_number, len(originals))
         workspace = {item["path"]: dict(item) for item in originals}
-        steps: list[dict[str, Any]] = []
+        for change in seed_changes or []:
+            change_path = change.get("path")
+            if change_path in workspace:
+                workspace[change_path]["content"] = change.get("proposed_content") or workspace[change_path]["content"]
+                workspace[change_path]["proposed_content"] = workspace[change_path]["content"]
+                workspace[change_path]["context_mode"] = "proposal_retry_workspace"
+        steps: list[dict[str, Any]] = list(prior_steps or [])
         test_output = ""
         patch_summary = "Iterative agent run completed."
         test_plan = "Review final diff and run the repository test suite."
@@ -185,6 +217,31 @@ class IterativeAgentLoop:
                     {
                         "step": step_number,
                         "action": "unchanged_edit",
+                        "status": "blocked",
+                        "path": path,
+                        "summary": summary,
+                        "observation": test_output,
+                    }
+                )
+                continue
+            try:
+                self._validate_proposed_content(path, before_content, proposed)
+            except RuntimeError as exc:
+                test_output = (
+                    f"Proposed content was rejected by safety checks: {exc}\n"
+                    "The next step must preserve existing routes/functions and make only the requested change."
+                )
+                logger.info(
+                    "Agent unsafe edit rejected issue=%s step=%s path=%s reason=%s",
+                    issue_number,
+                    step_number,
+                    path,
+                    exc,
+                )
+                steps.append(
+                    {
+                        "step": step_number,
+                        "action": "unsafe_edit_rejected",
                         "status": "blocked",
                         "path": path,
                         "summary": summary,
@@ -324,6 +381,29 @@ class IterativeAgentLoop:
                 output = ((exc.stdout or "") + (exc.stderr or "")) if isinstance(exc.stdout, str) else ""
                 return {"status": "timeout", "output": (output[-5000:] or "Test command timed out.")}
 
+    def _validate_proposed_content(self, path: str, before: str, after: str) -> None:
+        if path.endswith(".py"):
+            try:
+                ast.parse(after)
+            except SyntaxError as exc:
+                raise RuntimeError(f"Python syntax error in proposed {path}: {exc}") from exc
+
+        if path.replace("\\", "/").endswith("github_cto/app.py"):
+            before_routes = set(_flask_routes(before))
+            after_routes = set(_flask_routes(after))
+            missing = sorted(before_routes - after_routes)
+            if missing:
+                raise RuntimeError(f"proposed app.py removes existing Flask routes: {', '.join(missing[:8])}")
+
+            before_defs = set(_top_level_defs(before))
+            after_defs = set(_top_level_defs(after))
+            missing_defs = sorted(before_defs - after_defs)
+            if missing_defs:
+                raise RuntimeError(f"proposed app.py removes top-level functions: {', '.join(missing_defs[:8])}")
+
+        if len(before) > 5000 and len(after) < int(len(before) * 0.65):
+            raise RuntimeError("proposed full-file content is much shorter than the original file")
+
     def _changes(self, originals: list[dict[str, Any]], workspace: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         original_by_path = {item["path"]: item for item in originals}
         changes = []
@@ -353,3 +433,15 @@ class IterativeAgentLoop:
             if before != payload["content"]:
                 return True
         return False
+
+
+def _flask_routes(content: str) -> list[str]:
+    return re.findall(r"@app\.route\(([^)]*)\)", content)
+
+
+def _top_level_defs(content: str) -> list[str]:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+    return [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]

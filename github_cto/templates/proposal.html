@@ -52,6 +52,14 @@
               {% if step.observation %}
                 <pre>{{ step.observation }}</pre>
               {% endif %}
+              {% if step.path and step.action in ["patch_rejected", "unsafe_edit_rejected", "unchanged_edit", "complete_without_changes"] %}
+                <form method="post" action="{{ url_for('retry_proposal_file', proposal_id=proposal.id) }}" class="retry-file-form" data-loading="Retrying file...">
+                  <input type="hidden" name="path" value="{{ step.path }}">
+                  <button class="secondary" type="submit">
+                    <span class="button-label">Retry this file</span>
+                  </button>
+                </form>
+              {% endif %}
             </li>
           {% endfor %}
         </ol>

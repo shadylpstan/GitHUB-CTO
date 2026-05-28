@@ -721,6 +721,10 @@ button.loading::before {
   color: #f7efe1;
 }
 
+.retry-file-form {
+  margin-top: 12px;
+}
+
 .flash-stack {
   display: grid;
   gap: 10px;
