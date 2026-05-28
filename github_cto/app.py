@@ -320,6 +320,9 @@ def create_app() -> Flask:
     @app.route("/proposals/<proposal_id>/create-pr", methods=["POST"])
     def create_pr_from_proposal(proposal_id: str):
         try:
+            if request.form.get("retry_file_intent"):
+                flash("Retry request was blocked from creating a PR. Use the Retry this file button again.", "error")
+                return redirect(url_for("review_proposal", proposal_id=proposal_id))
             store = proposal_store()
             proposal = store.load(proposal_id)
             app.logger.info("Creating PR from proposal proposal_id=%s", proposal_id)

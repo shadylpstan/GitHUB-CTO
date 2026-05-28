@@ -150,6 +150,12 @@ class IterativeAgentLoop:
                 break
 
             path = self._safe_path(agent_step.get("path") or "")
+            logger.info(
+                "Agent current file issue=%s step=%s path=%s",
+                issue_number,
+                step_number,
+                path,
+            )
             original = workspace.get(path)
             if original is None:
                 original = self._fetch_or_new(path, base_branch)
