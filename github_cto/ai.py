@@ -13,6 +13,13 @@ class CodexTimeout(CodexUnavailable):
     pass
 
 
+class CodexTransientError(CodexUnavailable):
+    pass
+
+
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
 class CodexEngineeringManager:
     """Codex-style planner that turns GitHub issues into reviewable engineering work."""
 
@@ -48,7 +55,7 @@ class CodexEngineeringManager:
             timeout=timeout,
         )
         if response.status_code >= 400:
-            raise CodexUnavailable(f"OpenAI API {response.status_code}: {response.text}")
+            raise CodexUnavailable(_clean_openai_error(response))
         content = response.json()["choices"][0]["message"]["content"]
         return json.loads(content)
 
@@ -56,12 +63,18 @@ class CodexEngineeringManager:
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                return requests.post(
+                response = requests.post(
                     url,
                     headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
                     json=json_payload,
                     timeout=timeout,
                 )
+                if response.status_code in RETRYABLE_STATUS_CODES:
+                    if attempt >= self.max_retries:
+                        raise CodexTransientError(_clean_openai_error(response))
+                    time.sleep(_retry_delay(attempt, response))
+                    continue
+                return response
             except (requests.Timeout, requests.ConnectionError) as exc:
                 last_error = exc
                 if attempt >= self.max_retries:
@@ -165,3 +178,35 @@ def _trim_content(content: str, max_chars: int) -> str:
         + "\n\n# ... content trimmed for Codex context budget ...\n\n"
         + content[-tail_chars:]
     )
+
+
+def _retry_delay(attempt: int, response: requests.Response) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return min(float(retry_after), 10.0)
+        except ValueError:
+            pass
+    return min(2.0 * (attempt + 1), 8.0)
+
+
+def _clean_openai_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+        message = payload.get("error", {}).get("message") or payload.get("message")
+        if message:
+            return f"OpenAI API {response.status_code}: {message}"
+    except ValueError:
+        pass
+
+    if response.status_code in {502, 503, 504}:
+        return (
+            f"OpenAI API {response.status_code}: OpenAI is temporarily unavailable. "
+            "Please retry in a moment."
+        )
+    if response.status_code == 429:
+        return "OpenAI API 429: Rate limit or quota pressure. Please wait and retry."
+    text = " ".join(response.text.split())
+    if len(text) > 240:
+        text = text[:240] + "..."
+    return f"OpenAI API {response.status_code}: {text}"

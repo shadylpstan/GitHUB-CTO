@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
-from .ai import CodexEngineeringManager, CodexTimeout
+from .ai import CodexEngineeringManager, CodexTimeout, CodexTransientError
 from .config import Config
 from .github_client import GitHubClient, GitHubError
 from .index_jobs import IndexJobRegistry
@@ -217,6 +217,10 @@ def create_app() -> Flask:
         except CodexTimeout as exc:
             app.logger.warning("Proposal generation timed out issue=%s: %s", issue_number, exc)
             flash("Codex timed out while generating the proposal. Reduce selected files or retry.", "error")
+            return redirect(url_for("issue_detail", issue_number=issue_number))
+        except CodexTransientError as exc:
+            app.logger.warning("Proposal generation hit transient OpenAI error issue=%s: %s", issue_number, exc)
+            flash("OpenAI is temporarily unavailable. Please retry in a moment.", "error")
             return redirect(url_for("issue_detail", issue_number=issue_number))
         except Exception as exc:
             app.logger.exception("Proposal generation failed issue=%s", issue_number)
