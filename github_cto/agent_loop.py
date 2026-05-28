@@ -43,15 +43,19 @@ class IterativeAgentLoop:
             self.workflow.planner.max_retries = original_retries
 
     def _run(self, issue_number: int, selected_files: list[str] | None = None) -> dict[str, Any]:
+        logger.info("Agent loading issue context issue=%s", issue_number)
         context = self.workflow.issue_context(issue_number)
         issue = context["issue"]
         triage = context["triage"]
+        logger.info("Agent loading default branch issue=%s", issue_number)
         base_branch = self.workflow.github.default_branch()
         selected = (selected_files or self.workflow.plan_files(issue_number)["files"])[: self.workflow.max_selected_files]
         if not selected:
             raise RuntimeError("No files were selected for the agent run.")
 
+        logger.info("Agent fetching selected files issue=%s files=%s", issue_number, selected)
         originals = self.workflow._proposal_context_files(selected, base_branch)
+        logger.info("Agent fetched selected files issue=%s count=%s", issue_number, len(originals))
         workspace = {item["path"]: dict(item) for item in originals}
         steps: list[dict[str, Any]] = []
         test_output = ""

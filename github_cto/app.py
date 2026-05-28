@@ -372,4 +372,10 @@ def setup_logging(app: Flask) -> None:
     app.logger.handlers.clear()
     app.logger.addHandler(file_handler)
     app.logger.addHandler(stream_handler)
-    logging.getLogger("github_cto").setLevel(logging.INFO)
+
+    package_logger = logging.getLogger("github_cto")
+    package_logger.setLevel(logging.INFO)
+    package_logger.handlers.clear()
+    package_logger.addHandler(file_handler)
+    package_logger.addHandler(stream_handler)
+    package_logger.propagate = False
