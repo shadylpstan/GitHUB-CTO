@@ -5,6 +5,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,17 +116,46 @@ class AiderBackend:
         env["AIDER_AUTO_COMMITS"] = "0"
         env["AIDER_YES"] = "1"
         env.setdefault("AIDER_ANALYTICS", "false")
-        completed = subprocess.run(
+        started = time.monotonic()
+        process = subprocess.Popen(
             args,
             cwd=workspace,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=self.config.timeout,
         )
-        output = (completed.stdout or "") + (completed.stderr or "")
-        if completed.returncode != 0:
-            raise AiderRunError(f"Aider failed with exit code {completed.returncode}:\n{output[-5000:]}")
+        output_parts: list[str] = []
+        last_heartbeat = 0.0
+        while True:
+            if process.stdout:
+                line = process.stdout.readline()
+                if line:
+                    output_parts.append(line)
+                    clean = line.strip()
+                    if clean:
+                        logger.info("Aider output: %s", clean[:500])
+            return_code = process.poll()
+            elapsed = time.monotonic() - started
+            if elapsed - last_heartbeat >= 15:
+                logger.info("Aider still running elapsed=%ss timeout=%ss", int(elapsed), self.config.timeout)
+                last_heartbeat = elapsed
+            if elapsed > self.config.timeout:
+                process.kill()
+                output = "".join(output_parts)
+                raise AiderRunError(f"Aider timed out after {self.config.timeout}s:\n{output[-5000:]}")
+            if return_code is not None:
+                if process.stdout:
+                    remaining = process.stdout.read()
+                    if remaining:
+                        output_parts.append(remaining)
+                break
+            if not line:
+                time.sleep(0.2)
+
+        output = "".join(output_parts)
+        if process.returncode != 0:
+            raise AiderRunError(f"Aider failed with exit code {process.returncode}:\n{output[-5000:]}")
         return output[-12000:]
 
     def _run_tests(self, workspace: Path) -> str:
