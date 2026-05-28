@@ -32,4 +32,5 @@ class Config:
     AIDER_MODEL = os.getenv("AIDER_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
     AIDER_TIMEOUT = int(os.getenv("AIDER_TIMEOUT", "600"))
     AIDER_TEST_COMMAND = os.getenv("AIDER_TEST_COMMAND", "")
+    AIDER_KEEP_RUNS = int(os.getenv("AIDER_KEEP_RUNS", "5"))
     AGENT_OPENAI_MAX_RETRIES = int(os.getenv("AGENT_OPENAI_MAX_RETRIES", "0"))

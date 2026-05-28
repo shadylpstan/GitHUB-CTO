@@ -137,6 +137,14 @@
           <span>Edit final file content</span>
           <textarea name="content_{{ loop.index0 }}" rows="18" spellcheck="false">{{ change.proposed_content }}</textarea>
         </label>
+        {% if proposal.codex and proposal.codex.agent == "Aider CLI Backend" %}
+          <form method="post" action="{{ url_for('run_aider', issue_number=proposal.issue.number) }}" class="retry-file-form" data-loading="Retrying with Aider...">
+            <input type="hidden" name="files" value="{{ change.path }}">
+            <button class="secondary" type="submit">
+              <span class="button-label">Retry this file with Aider</span>
+            </button>
+          </form>
+        {% endif %}
       </section>
     {% endfor %}
 

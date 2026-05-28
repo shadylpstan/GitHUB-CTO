@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Aider Run | GitHub CTO{% endblock %}
+
+{% block content %}
+  <section class="issue-hero">
+    <div>
+      <p class="eyebrow">Aider job {{ job.id[:8] }}</p>
+      <h1>Aider is working</h1>
+      <p class="lede" id="job-message">{{ job.message }}</p>
+      <p class="form-hint">Started: {{ job.started_at }}</p>
+    </div>
+    <div class="severity-card">
+      <strong id="job-state">{{ job.state }}</strong>
+      <span>Issue #{{ job.issue_number }}</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-title">
+      <h2>Live Run Log</h2>
+      <p>Important subprocess output and validation errors appear here.</p>
+    </div>
+    <div class="context-note">
+      <strong>Status: <span id="job-inline-state">{{ job.state }}</span></strong>
+      <span id="job-last-updated">Waiting for first update...</span>
+    </div>
+    <pre class="issue-body live-log" id="job-logs">{{ "\n".join(job.logs) or "Waiting for Aider logs..." }}</pre>
+    <div id="job-error" class="flash error" {% if not job.error %}hidden{% endif %}>{{ job.error }}</div>
+    <div id="job-actions" class="proposal-actions" {% if job.state not in ["complete", "error"] %}hidden{% endif %}>
+      <a class="primary" id="proposal-link" href="#">Review Proposal</a>
+      <a class="secondary" href="{{ url_for('issue_detail', issue_number=job.issue_number) }}">Back To Issue</a>
+    </div>
+  </section>
+
+  <script>
+    (() => {
+      const state = document.getElementById("job-state");
+      const message = document.getElementById("job-message");
+      const logs = document.getElementById("job-logs");
+      const error = document.getElementById("job-error");
+      const actions = document.getElementById("job-actions");
+      const proposalLink = document.getElementById("proposal-link");
+
+      const poll = async () => {
+        const response = await fetch("{{ url_for('aider_job_status', job_id=job.id) }}", { cache: "no-store" });
+        const payload = await response.json();
+        state.textContent = payload.state || "unknown";
+        document.getElementById("job-inline-state").textContent = payload.state || "unknown";
+        message.textContent = payload.message || "";
+        document.getElementById("job-last-updated").textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+        logs.textContent = (payload.logs || []).length ? payload.logs.join("\n") : "Waiting for Aider logs...";
+        logs.scrollTop = logs.scrollHeight;
+        if (payload.error) {
+          error.hidden = false;
+          error.textContent = payload.error;
+        }
+        if (payload.state === "complete" && payload.proposal_id) {
+          actions.hidden = false;
+          proposalLink.hidden = false;
+          proposalLink.href = `/proposals/${payload.proposal_id}`;
+        } else if (payload.state === "error") {
+          actions.hidden = false;
+          proposalLink.hidden = true;
+        } else {
+          window.setTimeout(poll, 1500);
+        }
+      };
+      window.setTimeout(poll, 1000);
+    })();
+  </script>
+{% endblock %}

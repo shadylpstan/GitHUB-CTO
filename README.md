@@ -51,6 +51,7 @@ AIDER_COMMAND=aider
 AIDER_MODEL=gpt-4.1-mini
 AIDER_TIMEOUT=600
 AIDER_TEST_COMMAND=
+AIDER_KEEP_RUNS=5
 ```
 
 The GitHub token needs repository contents write access and pull request access. For private repositories, use a fine-grained token scoped to the target repository.

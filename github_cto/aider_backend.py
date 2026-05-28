@@ -11,7 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlparse
 
 
@@ -20,6 +20,7 @@ class AiderRunError(RuntimeError):
 
 
 logger = logging.getLogger(__name__)
+ProgressCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class AiderConfig:
     model: str = "gpt-4.1-mini"
     timeout: int = 600
     test_command: str = ""
+    keep_runs: int = 5
 
 
 class AiderBackend:
@@ -46,6 +48,7 @@ class AiderBackend:
         github_token: str,
         repository: str,
         branch: str,
+        progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         if not openai_api_key:
             raise AiderRunError("OPENAI_API_KEY is required to run Aider.")
@@ -56,18 +59,25 @@ class AiderBackend:
         run_root.mkdir(parents=True, exist_ok=True)
 
         try:
+            self.cleanup_old_runs()
+            self._progress(progress, f"Preparing isolated workspace {run_id}.")
             logger.info("Aider preparing isolated workspace run_id=%s", run_id)
             self._clone_repository(workspace, github_token, repository, branch)
+            self._progress(progress, "Cloned repository into isolated workspace.")
             logger.info("Aider initializing workspace git repo run_id=%s", run_id)
             self._baseline_git_repo(workspace)
             prompt_path.write_text(self._prompt(issue, comments, selected_files), encoding="utf-8")
+            self._progress(progress, f"Starting Aider with {len(selected_files)} selected file(s).")
             logger.info("Aider subprocess starting run_id=%s files=%s", run_id, selected_files)
-            output = self._run_aider(workspace, prompt_path, selected_files, openai_api_key)
+            output = self._run_aider(workspace, prompt_path, selected_files, openai_api_key, progress)
+            self._progress(progress, "Aider subprocess completed.")
             logger.info("Aider subprocess completed run_id=%s", run_id)
             if self.config.test_command:
+                self._progress(progress, f"Running configured tests: {self.config.test_command}")
                 logger.info("Aider running configured tests run_id=%s command=%s", run_id, self.config.test_command)
                 output += "\n\n" + self._run_tests(workspace)
             changes = self._changed_files(workspace)
+            self._progress(progress, f"Captured {len(changes)} changed file(s).")
             logger.info("Aider captured changes run_id=%s changes=%s", run_id, len(changes))
             if not changes:
                 raise AiderRunError("Aider completed without producing file changes.")
@@ -77,6 +87,18 @@ class AiderBackend:
                 "Aider executable was not found. Install it with `pip install aider-chat` "
                 "or set AIDER_COMMAND to the full command."
             ) from exc
+        finally:
+            self.cleanup_old_runs()
+
+    def cleanup_old_runs(self) -> None:
+        keep = max(1, self.config.keep_runs)
+        if not self.workspace_root.exists():
+            return
+        runs = [path for path in self.workspace_root.iterdir() if path.is_dir()]
+        runs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for old_run in runs[keep:]:
+            shutil.rmtree(old_run, ignore_errors=True)
+            logger.info("Removed old Aider workspace %s", old_run)
 
     def _clone_repository(self, destination: Path, token: str, repository: str, branch: str) -> None:
         repo_name = _normalize_repository(repository)
@@ -119,7 +141,14 @@ class AiderBackend:
         if status.strip():
             self._git(workspace, "commit", "-m", "baseline")
 
-    def _run_aider(self, workspace: Path, prompt_path: Path, selected_files: list[str], openai_api_key: str) -> str:
+    def _run_aider(
+        self,
+        workspace: Path,
+        prompt_path: Path,
+        selected_files: list[str],
+        openai_api_key: str,
+        progress: ProgressCallback | None,
+    ) -> str:
         command = self._command_parts()
         args = [
             *command,
@@ -189,12 +218,14 @@ class AiderBackend:
                     clean = line.strip()
                     if clean:
                         logger.info("Aider output: %s", clean[:500])
+                        self._progress(progress, clean[:500])
             except queue.Empty:
                 pass
             return_code = process.poll()
             elapsed = time.monotonic() - started
             if elapsed - last_heartbeat >= 15:
                 logger.info("Aider still running elapsed=%ss timeout=%ss", int(elapsed), self.config.timeout)
+                self._progress(progress, f"Aider still running after {int(elapsed)}s.")
                 last_heartbeat = elapsed
             if elapsed > self.config.timeout:
                 process.kill()
@@ -289,6 +320,10 @@ class AiderBackend:
             "- Keep changes minimal and do not rewrite unrelated sections.\n"
             "- The final files must parse/compile and must not contain SEARCH/REPLACE markers."
         )
+
+    def _progress(self, progress: ProgressCallback | None, message: str) -> None:
+        if progress:
+            progress(message)
 
     def _command_parts(self) -> list[str]:
         value = self.config.command.strip()

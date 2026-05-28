@@ -738,6 +738,10 @@ button.loading::before {
   margin-top: 12px;
 }
 
+.live-log {
+  min-height: 320px;
+}
+
 .flash-stack {
   display: grid;
   gap: 10px;

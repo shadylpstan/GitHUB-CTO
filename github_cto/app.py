@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 from .agent_loop import AgentLoopConfig, IterativeAgentLoop
 from .aider_backend import AiderBackend, AiderConfig, AiderRunError
+from .aider_jobs import AiderJobRegistry
 from .ai import CodexEngineeringManager, CodexTimeout, CodexTransientError
 from .config import Config
 from .github_client import GitHubClient, GitHubError
@@ -24,6 +26,7 @@ def create_app() -> Flask:
     app.config.from_object(Config)
     setup_logging(app)
     index_jobs = IndexJobRegistry()
+    aider_jobs = AiderJobRegistry()
 
     def current_settings() -> tuple[str, str]:
         token = session.get("github_token") or app.config["GITHUB_TOKEN"]
@@ -88,6 +91,7 @@ def create_app() -> Flask:
                 model=app.config["AIDER_MODEL"],
                 timeout=app.config["AIDER_TIMEOUT"],
                 test_command=app.config["AIDER_TEST_COMMAND"],
+                keep_runs=app.config["AIDER_KEEP_RUNS"],
             ),
         )
 
@@ -286,51 +290,36 @@ def create_app() -> Flask:
     def run_aider(issue_number: int):
         selected_files = request.form.getlist("files")
         try:
-            app.logger.info("Starting Aider run issue=%s selected_files=%s", issue_number, len(selected_files))
-            workflow = make_workflow()
-            context = workflow.issue_context(issue_number)
-            issue = context["issue"]
-            comments = context["comments"]
-            triage = context["triage"]
-            repo = workflow.github.repository()
             token, repo_name = current_settings()
-            if not selected_files:
-                selected_files = workflow.plan_files(issue_number)["files"]
-            result = make_aider_backend().run_issue(
-                issue=issue,
-                comments=comments,
-                selected_files=selected_files,
-                openai_api_key=app.config["OPENAI_API_KEY"],
-                github_token=token,
-                repository=repo_name,
-                branch=repo["default_branch"],
+            job = aider_jobs.create(issue_number)
+            app.logger.info("Queued Aider run job=%s issue=%s selected_files=%s", job.id, issue_number, len(selected_files))
+            worker = threading.Thread(
+                target=_run_aider_job,
+                args=(app, aider_jobs, job.id, token, repo_name, issue_number, selected_files),
+                daemon=True,
             )
-            proposal = _proposal_from_aider_result(workflow, issue, triage, result)
-            validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
-            if validation_warnings:
-                proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
-            proposal_id = proposal_store().save(proposal)
-            app.logger.info(
-                "Aider run completed issue=%s proposal_id=%s changes=%s run_id=%s",
-                issue_number,
-                proposal_id,
-                len(proposal.get("changes", [])),
-                result.get("run_id"),
-            )
-            flash("Aider generated file changes. Review the diffs before creating the PR.", "success")
-            return redirect(url_for("review_proposal", proposal_id=proposal_id))
-        except AiderRunError as exc:
-            app.logger.warning("Aider run failed issue=%s: %s", issue_number, exc)
-            flash(str(exc), "error")
-            return redirect(url_for("issue_detail", issue_number=issue_number))
-        except ProposalValidationError as exc:
-            app.logger.warning("Aider proposal validation failed issue=%s: %s", issue_number, exc)
-            flash(f"Aider produced changes, but validation rejected them: {exc}", "error")
-            return redirect(url_for("issue_detail", issue_number=issue_number))
+            worker.start()
+            return redirect(url_for("aider_job_detail", job_id=job.id))
         except Exception as exc:
-            app.logger.exception("Aider run failed issue=%s", issue_number)
+            app.logger.exception("Failed to queue Aider run issue=%s", issue_number)
             flash(str(exc), "error")
             return redirect(url_for("issue_detail", issue_number=issue_number))
+
+    @app.route("/aider/jobs/<job_id>")
+    def aider_job_detail(job_id: str):
+        try:
+            job = aider_jobs.snapshot(job_id)
+            return render_template("aider_job.html", job=job)
+        except Exception as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+
+    @app.route("/aider/jobs/<job_id>.json")
+    def aider_job_status(job_id: str):
+        try:
+            return jsonify(aider_jobs.snapshot(job_id))
+        except Exception as exc:
+            return jsonify({"state": "error", "error": str(exc), "logs": []}), 404
 
     @app.route("/issues/<int:issue_number>/agent-run", methods=["POST"])
     def run_agent_loop(issue_number: int):
@@ -471,6 +460,101 @@ def _merge_retry_result(proposal: dict, retry_result: dict, retried_path: str) -
     codex = proposal.setdefault("codex", {})
     codex["agent"] = codex.get("agent") or retry_result.get("codex", {}).get("agent")
     codex["mode"] = "iterative agent with file retry"
+
+
+def _run_aider_job(
+    app: Flask,
+    aider_jobs: AiderJobRegistry,
+    job_id: str,
+    token: str,
+    repo_name: str,
+    issue_number: int,
+    selected_files: list[str],
+) -> None:
+    with app.app_context():
+        def progress(message: str) -> None:
+            app.logger.info("Aider job=%s %s", job_id, message)
+            aider_jobs.append_log(job_id, message)
+
+        try:
+            aider_jobs.update(job_id, state="running", message="Loading GitHub issue.")
+            progress("Loading GitHub issue and selected context.")
+            github = GitHubClient(token=token, repo=repo_name)
+            planner = CodexEngineeringManager(
+                app.config["OPENAI_API_KEY"],
+                app.config["OPENAI_MODEL"],
+                planning_timeout=app.config["OPENAI_PLANNING_TIMEOUT"],
+                patch_timeout=app.config["OPENAI_PATCH_TIMEOUT"],
+                max_retries=app.config["OPENAI_MAX_RETRIES"],
+            )
+            workflow = GitHubCTOWorkflow(
+                github=github,
+                planner=planner,
+                max_repo_files=app.config["MAX_REPO_FILES"],
+                max_file_bytes=app.config["MAX_FILE_BYTES"],
+                default_selected_files=app.config["DEFAULT_SELECTED_FILES"],
+                max_selected_files=app.config["MAX_SELECTED_FILES"],
+                max_context_chars_per_file=app.config["MAX_CONTEXT_CHARS_PER_FILE"],
+                max_parallel_fetches=app.config["MAX_PARALLEL_FETCHES"],
+                enable_file_summaries=app.config["ENABLE_FILE_SUMMARIES"],
+                repo_index=RepositoryIndex(
+                    app.instance_path + "/repo_index.sqlite3",
+                    OpenAIEmbedder(app.config["OPENAI_API_KEY"], app.config["OPENAI_EMBEDDING_MODEL"]),
+                ),
+            )
+            context = workflow.issue_context(issue_number)
+            issue = context["issue"]
+            comments = context["comments"]
+            triage = context["triage"]
+            repo = workflow.github.repository()
+            if not selected_files:
+                progress("No files selected; asking planner for file context.")
+                selected_files = workflow.plan_files(issue_number)["files"]
+            backend = AiderBackend(
+                repo_root=app.root_path + "/..",
+                workspace_root=app.instance_path + "/aider_runs",
+                config=AiderConfig(
+                    command=app.config["AIDER_COMMAND"],
+                    model=app.config["AIDER_MODEL"],
+                    timeout=app.config["AIDER_TIMEOUT"],
+                    test_command=app.config["AIDER_TEST_COMMAND"],
+                    keep_runs=app.config["AIDER_KEEP_RUNS"],
+                ),
+            )
+            result = backend.run_issue(
+                issue=issue,
+                comments=comments,
+                selected_files=selected_files,
+                openai_api_key=app.config["OPENAI_API_KEY"],
+                github_token=token,
+                repository=repo_name,
+                branch=repo["default_branch"],
+                progress=progress,
+            )
+            proposal = _proposal_from_aider_result(workflow, issue, triage, result)
+            progress("Validating generated changes.")
+            validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
+            if validation_warnings:
+                proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
+            proposal_id = ProposalStore(app.instance_path + "/proposals").save(proposal)
+            progress(f"Aider proposal ready: {proposal_id}.")
+            aider_jobs.update(
+                job_id,
+                state="complete",
+                proposal_id=proposal_id,
+                message="Aider proposal is ready for review.",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except (AiderRunError, ProposalValidationError, Exception) as exc:
+            app.logger.exception("Aider job failed job=%s issue=%s", job_id, issue_number)
+            aider_jobs.append_log(job_id, f"Error: {exc}")
+            aider_jobs.update(
+                job_id,
+                state="error",
+                error=str(exc),
+                message="Aider run failed.",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
 
 
 def _proposal_from_aider_result(
