@@ -75,9 +75,14 @@
           <div class="empty">No candidate files were selected. Codex can still propose new files or ask for broader context.</div>
         {% endfor %}
         <small class="form-hint">Tip: if Codex times out, uncheck less relevant files and retry.</small>
-        <button class="primary danger-zone" type="submit" {% if not has_openai_key %}disabled{% endif %}>
-          <span class="button-label">Ask Codex To Generate Proposal</span>
-        </button>
+        <div class="proposal-actions">
+          <button class="primary danger-zone" type="submit" name="proposal_mode" value="fast" {% if not has_openai_key %}disabled{% endif %}>
+            <span class="button-label">Fast Proposal</span>
+          </button>
+          <button class="secondary" type="submit" name="proposal_mode" value="deep" {% if not has_openai_key %}disabled{% endif %}>
+            Deep Proposal
+          </button>
+        </div>
       </form>
     </article>
   </section>

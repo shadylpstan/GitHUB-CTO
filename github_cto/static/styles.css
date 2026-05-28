@@ -479,6 +479,12 @@ button.loading::before {
   line-height: 1.4;
 }
 
+.proposal-actions {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr;
+}
+
 .issue-body {
   background: #151a18;
   border-radius: 20px;

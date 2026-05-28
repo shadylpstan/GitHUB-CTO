@@ -209,10 +209,16 @@ def create_app() -> Flask:
     @app.route("/issues/<int:issue_number>/proposal", methods=["POST"])
     def generate_proposal(issue_number: int):
         selected_files = request.form.getlist("files")
+        proposal_mode = request.form.get("proposal_mode", "fast")
         try:
-            app.logger.info("Generating proposal issue=%s selected_files=%s", issue_number, len(selected_files))
+            app.logger.info(
+                "Generating proposal issue=%s mode=%s selected_files=%s",
+                issue_number,
+                proposal_mode,
+                len(selected_files),
+            )
             workflow = make_workflow()
-            proposal = workflow.generate_proposal(issue_number, selected_files or None)
+            proposal = workflow.generate_proposal(issue_number, selected_files or None, proposal_mode=proposal_mode)
             proposal_id = proposal_store().save(proposal)
             app.logger.info("Proposal generated issue=%s proposal_id=%s changes=%s", issue_number, proposal_id, len(proposal.get("changes", [])))
             flash("Codex proposal generated. Review the diffs before creating the PR.", "success")

@@ -178,6 +178,79 @@ class CodexEngineeringManager:
             timeout=self.patch_timeout,
         )
 
+    def plan_edits(self, issue: dict[str, Any], file_payloads: list[dict[str, str]]) -> dict[str, Any]:
+        files_text = []
+        for file_payload in file_payloads:
+            summary = file_payload.get("summary", "")
+            snippets = file_payload.get("indexed_snippets", "")
+            content = _trim_content(file_payload["content"], 5000)
+            files_text.append(
+                f"--- FILE: {file_payload['path']} ({file_payload.get('context_mode', 'context')}) ---\n"
+                f"# Summary\n{summary or 'No summary available.'}\n\n"
+                f"# Indexed snippets\n{snippets or 'No indexed snippets available.'}\n\n"
+                f"# Context\n{content}\n"
+                f"--- END FILE ---"
+            )
+        return self._chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are planning a code change before generating a patch. "
+                        "Identify the smallest set of files likely to require edits. "
+                        "Return JSON only with keys: files, rationale. files must be an array of paths."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Issue #{issue.get('number')}: {issue.get('title')}\n\n"
+                        f"{issue.get('body') or ''}\n\n"
+                        "Candidate context:\n\n"
+                        + "\n\n".join(files_text)
+                    ),
+                },
+            ],
+            timeout=self.planning_timeout,
+        )
+
+    def generate_unified_patch(
+        self,
+        issue: dict[str, Any],
+        file_payloads: list[dict[str, str]],
+        max_context_chars_per_file: int = 12000,
+    ) -> dict[str, Any]:
+        files_text = []
+        for file_payload in file_payloads:
+            content = _trim_content(file_payload["content"], max_context_chars_per_file)
+            files_text.append(
+                f"--- FILE: {file_payload['path']} ---\n{content}\n--- END FILE ---"
+            )
+        return self._chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior engineer producing a compact reviewable patch. "
+                        "Return JSON only with keys: summary, test_plan, patches. "
+                        "patches must be an array of objects with path and unified_diff. "
+                        "For new files, include new_file_content. For existing files, provide a valid unified diff "
+                        "with exact context lines from the provided file content. Keep changes minimal."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"GitHub issue #{issue.get('number')}: {issue.get('title')}\n\n"
+                        f"Issue body:\n{issue.get('body') or ''}\n\n"
+                        "Files to patch:\n\n"
+                        + "\n\n".join(files_text)
+                    ),
+                },
+            ],
+            timeout=self.patch_timeout,
+        )
+
 
 def _trim_content(content: str, max_chars: int) -> str:
     if len(content) <= max_chars:

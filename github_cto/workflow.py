@@ -1,4 +1,5 @@
 import re
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
@@ -7,8 +8,12 @@ from .ai import CodexEngineeringManager
 from .evidence import evidence_rank
 from .github_client import GitHubClient, is_probably_text_file
 from .intent import architectural_rank, classify_issue_intent
+from .patch_utils import PatchApplyError, apply_unified_diff
 from .repo_index import RepositoryIndex
 from .triage import triage_issue
+
+
+logger = logging.getLogger(__name__)
 
 
 def safe_branch_name(issue_number: int, title: str) -> str:
@@ -189,7 +194,12 @@ class GitHubCTOWorkflow:
 
         return evidence_rank(files, issue_text, fetch_content=fetch)
 
-    def generate_proposal(self, issue_number: int, selected_files: list[str] | None = None) -> dict[str, Any]:
+    def generate_proposal(
+        self,
+        issue_number: int,
+        selected_files: list[str] | None = None,
+        proposal_mode: str = "fast",
+    ) -> dict[str, Any]:
         if not self.planner.enabled:
             raise RuntimeError("OPENAI_API_KEY is required to create autonomous code changes.")
 
@@ -201,24 +211,53 @@ class GitHubCTOWorkflow:
         if selected_files is None:
             selected_files = self.plan_files(issue_number)["files"]
         selected_files = (selected_files or [])[: self.max_selected_files]
+        proposal_mode = proposal_mode if proposal_mode in {"fast", "deep"} else "fast"
+        logger.info(
+            "Generating proposal issue=%s mode=%s selected_files=%s files=%s",
+            issue_number,
+            proposal_mode,
+            len(selected_files),
+            selected_files,
+        )
 
-        fetched = self._proposal_context_files(selected_files, base_branch)
+        planned_files = selected_files
+        if proposal_mode == "fast" and selected_files:
+            planning_context = self._proposal_context_files(selected_files, base_branch)
+            edit_plan = self.planner.plan_edits(issue, planning_context)
+            planned_files = [path for path in edit_plan.get("files", []) if path in selected_files]
+            if not planned_files:
+                planned_files = selected_files[: self.default_selected_files]
+            planned_files = planned_files[: self.max_selected_files]
+            logger.info(
+                "Edit plan issue=%s planned_files=%s rationale=%s",
+                issue_number,
+                planned_files,
+                edit_plan.get("rationale", ""),
+            )
 
-        patch = self.planner.generate_patch(
+        fetched = self._proposal_context_files(planned_files, base_branch)
+        logger.info(
+            "Patch context issue=%s mode=%s context_files=%s modes=%s",
+            issue_number,
+            proposal_mode,
+            [item["path"] for item in fetched],
+            {item["path"]: item.get("context_mode") for item in fetched},
+        )
+
+        patch = self.planner.generate_unified_patch(
             issue,
             fetched,
             max_context_chars_per_file=self.max_context_chars_per_file,
         )
-        raw_changes = patch.get("changes", [])
-        if not raw_changes:
+        raw_patches = patch.get("patches", [])
+        if not raw_patches:
             raise RuntimeError("AI did not produce any file changes.")
 
         fetched_by_path = {item["path"]: item for item in fetched}
         changes = []
-        for change in raw_changes:
-            path = (change.get("path") or "").strip().lstrip("/")
-            content = change.get("full_content")
-            if not path or content is None or ".." in path.split("/"):
+        for patch_item in raw_patches:
+            path = (patch_item.get("path") or "").strip().lstrip("/")
+            if not path or ".." in path.split("/"):
                 continue
             original = fetched_by_path.get(path)
             if original is None:
@@ -226,12 +265,21 @@ class GitHubCTOWorkflow:
                     original = self.github.get_file(path, ref=base_branch)
                 except Exception:
                     original = None
-            if original and len(original.get("content", "")) > self.max_context_chars_per_file:
-                if len(content) < max(200, int(len(original["content"]) * 0.55)):
+
+            if patch_item.get("new_file_content") is not None:
+                content = patch_item["new_file_content"]
+            elif patch_item.get("full_content") is not None:
+                content = patch_item["full_content"]
+            else:
+                if not original:
+                    raise RuntimeError(f"Codex returned a diff for new file {path} without new_file_content.")
+                try:
+                    content = apply_unified_diff(original["content"], patch_item.get("unified_diff", ""))
+                except PatchApplyError as exc:
                     raise RuntimeError(
-                        f"Codex returned partial-looking content for large file {path}. "
-                        "Reduce selected files or increase MAX_CONTEXT_CHARS_PER_FILE and retry."
-                    )
+                        f"Codex produced a patch that could not be applied to {path}. Retry with Deep Proposal."
+                    ) from exc
+
             changes.append(
                 {
                     "path": path,
@@ -239,6 +287,7 @@ class GitHubCTOWorkflow:
                     "sha": original["sha"] if original else None,
                     "original_content": original["content"] if original else "",
                     "proposed_content": content,
+                    "unified_diff": patch_item.get("unified_diff", ""),
                 }
             )
 
@@ -263,7 +312,13 @@ class GitHubCTOWorkflow:
                 "agent": "Codex Engineering Manager",
                 "mode": "GitHub-only",
                 "model": self.planner.model,
-                "timeline": codex_timeline("review", proposed_files=len(changes), base_branch=base_branch),
+                "timeline": codex_timeline(
+                    "review",
+                    proposed_files=len(changes),
+                    base_branch=base_branch,
+                    proposal_mode=proposal_mode,
+                    context_files=len(fetched),
+                ),
             },
         }
 

@@ -68,7 +68,7 @@ python app.py
 3. Click `Rebuild Index` once so Codex can use semantic repository memory.
 4. Pick a real GitHub issue.
 5. Review severity and selected context files.
-6. Click `Ask Codex To Generate Proposal`.
+6. Click `Fast Proposal` for the optimized two-stage path, or `Deep Proposal` for broader full-file context.
 7. Review the Codex timeline, inspect diffs, edit proposed file contents if needed, then approve the run.
 8. The app creates a real branch, commits the reviewed changes, opens a PR, and comments on the issue.
 
@@ -90,6 +90,13 @@ instance/github_cto.log
 ```
 
 The index intentionally skips noisy/generated files such as `__pycache__`, `node_modules`, logs, markdown, Excel/doc/PDF files, lockfiles, build folders, and vendor folders. Rebuild the index once after updating the app so the new filters are applied.
+
+## Proposal Modes
+
+- `Fast Proposal`: Codex first creates an edit plan, then generates compact unified diffs for the smallest likely file set.
+- `Deep Proposal`: Codex skips the edit-plan narrowing step and patches the selected files directly.
+
+The app logs proposal mode, selected files, planned files, context files, and generated changes to `instance/github_cto.log`.
 
 ## Safety Notes
 
