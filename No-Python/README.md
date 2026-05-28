@@ -40,7 +40,13 @@ GitHub issue / @codex fix comment
 
 ## Setup
 
-Copy the contents of this `No-Python` folder into the repository you want GitHub CTO to manage, preserving the `.github/workflows` path.
+Keep the agent implementation in `No-Python`, and make sure the workflow file is committed at the repository root:
+
+```text
+.github/workflows/codex-issue-manager.yml
+```
+
+GitHub Actions will not discover workflows stored only inside `No-Python/.github/workflows`.
 
 Install dependencies locally if you want to test scripts before pushing:
 
