@@ -31,3 +31,14 @@ Issue -> selected files -> isolated temp git workspace -> aider CLI edits files 
 ```
 
 This avoids asking OpenAI to return perfect JSON patches. Aider owns the file-editing loop; Flask owns review and PR creation.
+
+## Generic Validators
+
+Aider proposals are validated before review. These checks are generic, not issue-specific:
+
+- Python files must parse with `ast`.
+- JSON files must parse.
+- Jinja templates must compile.
+- HTML-like files must not have obviously unbalanced common tags such as `form`, `button`, `section`, or `div`.
+- Node/Java syntax checks run when `node` or `javac` are available.
+- Proposal content is rejected if it contains merge/search-replace conflict markers or large commented-out replacement blocks.

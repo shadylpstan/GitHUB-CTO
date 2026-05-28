@@ -76,6 +76,20 @@
     </section>
   {% endif %}
 
+  {% if proposal.patch.validation_warnings %}
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Validation Warnings</h2>
+        <p>Review these before approving the PR.</p>
+      </div>
+      <ul class="rationale-list">
+        {% for warning in proposal.patch.validation_warnings %}
+          <li>{{ warning }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
   <form method="post" action="{{ url_for('create_pr_from_proposal', proposal_id=proposal.id) }}" class="review-form" target="_blank" data-loading="Creating reviewed PR...">
     <section class="panel">
       <div class="panel-title">

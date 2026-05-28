@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import os
 import logging
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse
 
 
 class AiderRunError(RuntimeError):
@@ -40,6 +43,9 @@ class AiderBackend:
         comments: list[dict[str, Any]],
         selected_files: list[str],
         openai_api_key: str,
+        github_token: str,
+        repository: str,
+        branch: str,
     ) -> dict[str, Any]:
         if not openai_api_key:
             raise AiderRunError("OPENAI_API_KEY is required to run Aider.")
@@ -51,7 +57,7 @@ class AiderBackend:
 
         try:
             logger.info("Aider preparing isolated workspace run_id=%s", run_id)
-            self._copy_workspace(workspace)
+            self._clone_repository(workspace, github_token, repository, branch)
             logger.info("Aider initializing workspace git repo run_id=%s", run_id)
             self._baseline_git_repo(workspace)
             prompt_path.write_text(self._prompt(issue, comments, selected_files), encoding="utf-8")
@@ -72,6 +78,22 @@ class AiderBackend:
                 "or set AIDER_COMMAND to the full command."
             ) from exc
 
+    def _clone_repository(self, destination: Path, token: str, repository: str, branch: str) -> None:
+        repo_name = _normalize_repository(repository)
+        if not repo_name:
+            raise AiderRunError("GITHUB_REPOSITORY must be owner/repo or a GitHub repository URL.")
+
+        clone_url = f"https://x-access-token:{quote(token, safe='')}@github.com/{repo_name}.git"
+        completed = subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", branch, clone_url, str(destination)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if completed.returncode != 0:
+            safe_output = ((completed.stdout or "") + (completed.stderr or "")).replace(token, "***")
+            raise AiderRunError(f"Could not clone {repo_name} branch {branch} for Aider:\n{safe_output[-1500:]}")
+
     def _copy_workspace(self, destination: Path) -> None:
         ignore = shutil.ignore_patterns(
             ".git",
@@ -90,11 +112,12 @@ class AiderBackend:
         shutil.copytree(self.repo_root, destination, ignore=ignore)
 
     def _baseline_git_repo(self, workspace: Path) -> None:
-        self._git(workspace, "init")
         self._git(workspace, "config", "user.name", "github-cto-aider")
         self._git(workspace, "config", "user.email", "github-cto-aider@users.noreply.github.com")
         self._git(workspace, "add", ".")
-        self._git(workspace, "commit", "-m", "baseline")
+        status = self._git_text(workspace, "status", "--porcelain")
+        if status.strip():
+            self._git(workspace, "commit", "-m", "baseline")
 
     def _run_aider(self, workspace: Path, prompt_path: Path, selected_files: list[str], openai_api_key: str) -> str:
         command = self._command_parts()
@@ -109,12 +132,28 @@ class AiderBackend:
             "--yes",
             "--no-auto-commits",
             "--no-gitignore",
+            "--no-detect-urls",
+            "--disable-playwright",
+            "--no-pretty",
+            "--no-fancy-input",
+            "--no-stream",
+            "--no-auto-lint",
             *selected_files,
         ]
         env = os.environ.copy()
         env["OPENAI_API_KEY"] = openai_api_key
         env["AIDER_AUTO_COMMITS"] = "0"
         env["AIDER_YES"] = "1"
+        env["AIDER_DETECT_URLS"] = "false"
+        env["AIDER_DISABLE_PLAYWRIGHT"] = "true"
+        env["AIDER_PRETTY"] = "false"
+        env["AIDER_FANCY_INPUT"] = "false"
+        env["AIDER_STREAM"] = "false"
+        env["AIDER_AUTO_LINT"] = "false"
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env["TERM"] = "dumb"
+        env["NO_COLOR"] = "1"
         env.setdefault("AIDER_ANALYTICS", "false")
         started = time.monotonic()
         process = subprocess.Popen(
@@ -126,15 +165,32 @@ class AiderBackend:
             text=True,
         )
         output_parts: list[str] = []
+        output_queue: queue.Queue[str | None] = queue.Queue()
+
+        def read_output() -> None:
+            try:
+                if process.stdout:
+                    for item in process.stdout:
+                        output_queue.put(item)
+            finally:
+                output_queue.put(None)
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
         last_heartbeat = 0.0
+        output_closed = False
         while True:
-            if process.stdout:
-                line = process.stdout.readline()
-                if line:
+            try:
+                line = output_queue.get(timeout=0.5)
+                if line is None:
+                    output_closed = True
+                else:
                     output_parts.append(line)
                     clean = line.strip()
                     if clean:
                         logger.info("Aider output: %s", clean[:500])
+            except queue.Empty:
+                pass
             return_code = process.poll()
             elapsed = time.monotonic() - started
             if elapsed - last_heartbeat >= 15:
@@ -145,16 +201,26 @@ class AiderBackend:
                 output = "".join(output_parts)
                 raise AiderRunError(f"Aider timed out after {self.config.timeout}s:\n{output[-5000:]}")
             if return_code is not None:
-                if process.stdout:
-                    remaining = process.stdout.read()
-                    if remaining:
-                        output_parts.append(remaining)
+                while not output_closed:
+                    try:
+                        line = output_queue.get(timeout=0.2)
+                        if line is None:
+                            output_closed = True
+                        else:
+                            output_parts.append(line)
+                    except queue.Empty:
+                        break
                 break
-            if not line:
-                time.sleep(0.2)
 
         output = "".join(output_parts)
         if process.returncode != 0:
+            changes = self._changed_files(workspace)
+            if changes:
+                logger.warning(
+                    "Aider exited nonzero after applying changes; preserving changes returncode=%s",
+                    process.returncode,
+                )
+                return output[-12000:] + f"\n\nAider exited with code {process.returncode} after applying edits. Review carefully."
             raise AiderRunError(f"Aider failed with exit code {process.returncode}:\n{output[-5000:]}")
         return output[-12000:]
 
@@ -211,7 +277,17 @@ class AiderBackend:
             f"Files selected by GitHub CTO:\n{files}\n\n"
             "Make the minimal code changes needed to address the issue. "
             "Preserve existing behavior and style. Do not create a PR or commit. "
-            "Leave the edited files in the working tree for Flask to review as a diff."
+            "Leave the edited files in the working tree for Flask to review as a diff.\n\n"
+            "Edit hygiene rules:\n"
+            "- Do not comment out removed code. Delete obsolete code cleanly.\n"
+            "- Do not leave explanatory comments in place of removed routes, forms, buttons, methods, or imports.\n"
+            "- If removing UI, remove the complete related element, including its wrapper form and JavaScript references.\n"
+            "- If removing backend behavior, remove the complete route/helper only when the issue asks for backend removal.\n"
+            "- After the main edit, scan the edited files for stale IDs, variable names, routes, url_for calls, imports, CSS selectors, and helper references related to the removed behavior.\n"
+            "- Remove stale references in the same file when they no longer point to an existing element or route.\n"
+            "- For UI removals, check both the HTML markup and the page script in the same template.\n"
+            "- Keep changes minimal and do not rewrite unrelated sections.\n"
+            "- The final files must parse/compile and must not contain SEARCH/REPLACE markers."
         )
 
     def _command_parts(self) -> list[str]:
@@ -239,3 +315,18 @@ class AiderBackend:
         if completed.returncode != 0:
             return None
         return completed.stdout
+
+
+def _normalize_repository(repository: str) -> str:
+    value = (repository or "").strip().strip("/").removesuffix(".git")
+    if not value:
+        return ""
+    if value.startswith("http://") or value.startswith("https://"):
+        parsed = urlparse(value)
+        value = parsed.path.strip("/")
+    if value.startswith("github.com/"):
+        value = value.removeprefix("github.com/")
+    parts = value.split("/")
+    if len(parts) < 2:
+        return ""
+    return f"{parts[0]}/{parts[1]}"

@@ -15,6 +15,7 @@ from .index_jobs import IndexJobRegistry
 from .proposals import ProposalStore, attach_diffs
 from .repo_index import OpenAIEmbedder, RepositoryIndex
 from .triage import triage_issue
+from .validators import ProposalValidationError, validate_proposal_changes
 from .workflow import GitHubCTOWorkflow
 
 
@@ -291,6 +292,8 @@ def create_app() -> Flask:
             issue = context["issue"]
             comments = context["comments"]
             triage = context["triage"]
+            repo = workflow.github.repository()
+            token, repo_name = current_settings()
             if not selected_files:
                 selected_files = workflow.plan_files(issue_number)["files"]
             result = make_aider_backend().run_issue(
@@ -298,8 +301,14 @@ def create_app() -> Flask:
                 comments=comments,
                 selected_files=selected_files,
                 openai_api_key=app.config["OPENAI_API_KEY"],
+                github_token=token,
+                repository=repo_name,
+                branch=repo["default_branch"],
             )
             proposal = _proposal_from_aider_result(workflow, issue, triage, result)
+            validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
+            if validation_warnings:
+                proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
             proposal_id = proposal_store().save(proposal)
             app.logger.info(
                 "Aider run completed issue=%s proposal_id=%s changes=%s run_id=%s",
@@ -313,6 +322,10 @@ def create_app() -> Flask:
         except AiderRunError as exc:
             app.logger.warning("Aider run failed issue=%s: %s", issue_number, exc)
             flash(str(exc), "error")
+            return redirect(url_for("issue_detail", issue_number=issue_number))
+        except ProposalValidationError as exc:
+            app.logger.warning("Aider proposal validation failed issue=%s: %s", issue_number, exc)
+            flash(f"Aider produced changes, but validation rejected them: {exc}", "error")
             return redirect(url_for("issue_detail", issue_number=issue_number))
         except Exception as exc:
             app.logger.exception("Aider run failed issue=%s", issue_number)
