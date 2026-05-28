@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}GitHub CTO{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="{{ url_for('dashboard') if configured_repo and has_github_token else url_for('index') }}">
+        <span class="brand-mark">CTO</span>
+        <span>
+          <strong>GitHub CTO</strong>
+          <small>Codex-native Engineering Manager</small>
+        </span>
+      </a>
+      <nav>
+        {% if configured_repo %}
+          <span class="repo-pill">{{ configured_repo }}</span>
+        {% endif %}
+        <a class="nav-link" href="{{ url_for('connection') }}">Connection</a>
+        <span class="status {{ 'on' if has_openai_key else 'off' }}">
+          Codex {{ 'ready' if has_openai_key else 'needs key' }}
+        </span>
+      </nav>
+    </header>
+
+    <main class="shell">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <section class="flash-stack">
+            {% for category, message in messages %}
+              <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </section>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+    <script>
+      document.addEventListener("submit", (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement) || !form.dataset.loading) return;
+        const button = form.querySelector("button[type='submit']");
+        if (!button) return;
+        button.disabled = true;
+        button.classList.add("loading");
+        const label = button.querySelector(".button-label");
+        if (label) label.textContent = form.dataset.loading;
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+{% block title %}Dashboard | GitHub CTO{% endblock %}
+
+{% block content %}
+  <section class="dashboard-head">
+    <div>
+      <p class="eyebrow">Codex connected as {{ user.login }}</p>
+      <h1>Engineering queue</h1>
+      <p class="lede">
+        Codex is watching GitHub issues, scoring urgency, and preparing reviewable issue-to-PR runs.
+      </p>
+      <div class="repo-meta">
+        <span>{{ repo.private and "Private repository" or "Public repository" }}</span>
+        <span>Default branch: {{ repo.default_branch }}</span>
+        <span>{{ repo.description or "No repository description" }}</span>
+      </div>
+    </div>
+    <div class="metric-card">
+      <strong>{{ triaged|length }}</strong>
+      <span>open issues scanned</span>
+      <small>polling in <b id="refresh-countdown">10</b>s</small>
+    </div>
+  </section>
+
+  <section class="index-panel">
+    <div>
+      <p class="eyebrow">Semantic repository memory</p>
+      <h2>Vector index</h2>
+      <p>
+        Codex uses this local index to find relevant files and code chunks before reading full files.
+      </p>
+    </div>
+    <div class="index-stats">
+      <span><strong id="index-files">{{ index_job.files_indexed if index_job.state == "running" else index_stats.files }}</strong> files</span>
+      <span><strong id="index-chunks">{{ index_job.chunks_created if index_job.state == "running" else index_stats.chunks }}</strong> chunks</span>
+      <span id="index-updated">{{ index_stats.updated_at or "not indexed yet" }}</span>
+    </div>
+    <form method="post" action="{{ url_for('rebuild_index') }}" data-loading="Starting index rebuild...">
+      <button class="primary" id="rebuild-index-button" type="submit" {% if index_job.state == "running" %}disabled{% endif %}>
+        <span class="button-label">{{ "Rebuilding..." if index_job.state == "running" else "Rebuild Index" }}</span>
+      </button>
+    </form>
+  </section>
+
+  <section class="index-progress {{ 'active' if index_job.state == 'running' else '' }}" id="index-progress">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>
+      <strong id="index-message">{{ index_job.message }}</strong>
+      <span id="index-detail">
+        {% if index_job.state == "running" %}
+          {{ index_job.files_seen }}/{{ index_job.total_files }} files scanned.
+          {{ index_job.chunks_embedded }}/{{ index_job.chunks_created }} chunks embedded.
+          {{ index_job.current_file }}
+        {% elif index_job.state == "error" %}
+          {{ index_job.error }}
+        {% else %}
+          Logs are written to instance/github_cto.log.
+        {% endif %}
+      </span>
+    </div>
+  </section>
+
+  <section class="panel index-tree-panel">
+    <div class="panel-title">
+      <div>
+        <h2>Indexed Files</h2>
+        <p>These are the files Codex can use for semantic discovery before reading full files.</p>
+      </div>
+      <button class="secondary small-button" id="toggle-index-files" type="button">Show Tree</button>
+    </div>
+    <div class="index-tree" id="index-files-tree" hidden>
+      {% for file in indexed_files %}
+        <div class="index-file-row">
+          <code>{{ file.path }}</code>
+          <span>{{ file.language }} · {{ file.chunks }} chunk{{ '' if file.chunks == 1 else 's' }} · lines {{ file.start_line }}-{{ file.end_line }}</span>
+        </div>
+      {% else %}
+        <div class="empty">No indexed files yet. Click Rebuild Index to populate repository memory.</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-title">
+      <h2>Codex Triage Queue</h2>
+      <p>Pick an issue and watch Codex move from intake to reviewable patch.</p>
+    </div>
+    <div class="issue-list" id="issue-list">
+      {% for row in triaged %}
+        {% set issue = row.issue %}
+        {% set triage = row.triage %}
+        <a class="issue-row" href="{{ url_for('issue_detail', issue_number=issue.number) }}">
+          <div class="severity {{ triage.severity|lower }}">{{ triage.severity }}</div>
+          <div class="issue-main">
+            <strong>#{{ issue.number }} {{ issue.title }}</strong>
+            <span>{{ triage.recommended_action }}</span>
+          </div>
+          <div class="score">
+            <strong>{{ triage.score }}</strong>
+            <span>score</span>
+          </div>
+        </a>
+      {% else %}
+        <div class="empty">No open issues found in this repository.</div>
+      {% endfor %}
+    </div>
+  </section>
+  <script>
+    (() => {
+      let remaining = 10;
+      const counter = document.getElementById("refresh-countdown");
+      let indexRunning = {{ 'true' if index_job.state == 'running' else 'false' }};
+      let pausedForNavigation = false;
+      const issueList = document.getElementById("issue-list");
+
+      document.querySelectorAll(".issue-row").forEach((row) => {
+        row.addEventListener("click", () => {
+          pausedForNavigation = true;
+          if (counter) counter.textContent = "paused";
+        });
+      });
+
+      const renderIssues = (issues) => {
+        if (!issueList || pausedForNavigation) return;
+        issueList.innerHTML = issues.length
+          ? issues.map((issue) => `
+              <a class="issue-row" href="${issue.url}">
+                <div class="severity ${issue.severity.toLowerCase()}">${issue.severity}</div>
+                <div class="issue-main">
+                  <strong>#${issue.number} ${issue.title}</strong>
+                  <span>${issue.recommended_action}</span>
+                </div>
+                <div class="score">
+                  <strong>${issue.score}</strong>
+                  <span>score</span>
+                </div>
+              </a>
+            `).join("")
+          : `<div class="empty">No open issues found in this repository.</div>`;
+        document.querySelectorAll(".issue-row").forEach((row) => {
+          row.addEventListener("click", () => {
+            pausedForNavigation = true;
+            if (counter) counter.textContent = "paused";
+          });
+        });
+      };
+
+      const pollIssues = async () => {
+        if (pausedForNavigation || indexRunning) return;
+        const response = await fetch("{{ url_for('issues_json') }}", { cache: "no-store" });
+        const payload = await response.json();
+        if (payload.issues) renderIssues(payload.issues);
+      };
+
+      const tick = () => {
+        if (pausedForNavigation) return;
+        remaining -= 1;
+        if (counter) counter.textContent = String(Math.max(remaining, 0));
+        if (remaining <= 0) {
+          pollIssues();
+          remaining = 10;
+        }
+        window.setTimeout(tick, 1000);
+      };
+      window.setTimeout(tick, 1000);
+
+      const progressPanel = document.getElementById("index-progress");
+      const message = document.getElementById("index-message");
+      const detail = document.getElementById("index-detail");
+      const files = document.getElementById("index-files");
+      const chunks = document.getElementById("index-chunks");
+      const updated = document.getElementById("index-updated");
+      const button = document.getElementById("rebuild-index-button");
+      const tree = document.getElementById("index-files-tree");
+      const toggleTree = document.getElementById("toggle-index-files");
+
+      if (toggleTree && tree) {
+        toggleTree.addEventListener("click", () => {
+          const isHidden = tree.hasAttribute("hidden");
+          if (isHidden) {
+            tree.removeAttribute("hidden");
+            toggleTree.textContent = "Hide Tree";
+          } else {
+            tree.setAttribute("hidden", "");
+            toggleTree.textContent = "Show Tree";
+          }
+        });
+      }
+
+      const refreshIndexedFiles = async () => {
+        const response = await fetch("{{ url_for('index_files') }}", { cache: "no-store" });
+        const payload = await response.json();
+        if (files) files.textContent = String(payload.stats.files);
+        if (chunks) chunks.textContent = String(payload.stats.chunks);
+        if (updated) updated.textContent = payload.stats.updated_at || "not indexed yet";
+        if (tree) {
+          tree.innerHTML = payload.files.length
+            ? payload.files.map((file) => `
+                <div class="index-file-row">
+                  <code>${file.path}</code>
+                  <span>${file.language} · ${file.chunks} chunk${file.chunks === 1 ? "" : "s"} · lines ${file.start_line}-${file.end_line}</span>
+                </div>
+              `).join("")
+            : `<div class="empty">No indexed files yet. Click Rebuild Index to populate repository memory.</div>`;
+        }
+      };
+
+      const pollIndex = async () => {
+        try {
+          const response = await fetch("{{ url_for('index_status') }}", { cache: "no-store" });
+          const status = await response.json();
+          const wasRunning = indexRunning;
+          indexRunning = status.state === "running";
+          if (progressPanel) progressPanel.classList.toggle("active", indexRunning || status.state === "error");
+          if (message) message.textContent = status.message || "Index status unavailable.";
+          if (files) files.textContent = String(["running", "complete"].includes(status.state) ? status.files_indexed : {{ index_stats.files }});
+          if (chunks) chunks.textContent = String(["running", "complete"].includes(status.state) ? status.chunks_created : {{ index_stats.chunks }});
+          if (button) {
+            button.disabled = indexRunning;
+            button.querySelector(".button-label").textContent = indexRunning ? "Rebuilding..." : "Rebuild Index";
+          }
+          if (detail) {
+            if (status.state === "running") {
+              detail.textContent = `${status.files_seen}/${status.total_files} files scanned. ${status.files_indexed} indexed, ${status.files_skipped} skipped. ${status.chunks_embedded}/${status.chunks_created} chunks embedded. ${status.current_file || ""}`;
+            } else if (status.state === "error") {
+              detail.textContent = status.error || "Index rebuild failed.";
+            } else {
+              detail.textContent = "Logs are written to instance/github_cto.log.";
+            }
+          }
+          if (wasRunning && status.state === "complete") {
+            await refreshIndexedFiles();
+          }
+        } catch (error) {
+          if (message) message.textContent = "Could not read index status.";
+        } finally {
+          window.setTimeout(pollIndex, 1000);
+        }
+      };
+      pollIndex();
+    })();
+  </script>
+{% endblock %}

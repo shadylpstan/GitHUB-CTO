@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Connect GitHub | GitHub CTO{% endblock %}
+
+{% block content %}
+  <section class="hero">
+    <div>
+      <p class="eyebrow">Codex-native GitHub automation</p>
+      <h1>Let a Codex engineering manager drive issue-to-PR work.</h1>
+      <p class="lede">
+        Connect a real GitHub repository. GitHub CTO reads live issues, triages severity,
+        scans the repo, selects code context, drafts a reviewable patch, waits for your approval,
+        then creates the branch, commits, PR, and issue comment.
+      </p>
+    </div>
+    <div class="hero-card">
+      <h2>Connect GitHub</h2>
+      <form method="post" class="form-stack">
+        <label>
+          <span>GitHub token</span>
+          <input name="github_token" type="password" placeholder="ghp_..." value="">
+          <small>Needs repo read/write access for private repos, or public_repo for public repos.</small>
+        </label>
+        <label>
+          <span>Repository</span>
+          <input name="github_repo" placeholder="owner/repo" value="{{ configured_repo }}">
+        </label>
+        <button class="primary" type="submit">Launch Dashboard</button>
+      </form>
+      {% if configured_repo and has_github_token %}
+        <form method="post" action="{{ url_for('reset_connection') }}" class="reset-form">
+          <button class="secondary" type="submit">Use .env Connection</button>
+        </form>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="feature-grid">
+    <article>
+      <h3>Codex Intake</h3>
+      <p>Reads live GitHub issues and turns them into structured engineering work.</p>
+    </article>
+    <article>
+      <h3>Agent Triage</h3>
+      <p>Scores urgency using issue text, labels, and discussion signals before touching code.</p>
+    </article>
+    <article>
+      <h3>Reviewable PRs</h3>
+      <p>Codex proposes file-level changes, you edit the patch, then GitHub execution happens.</p>
+    </article>
+  </section>
+{% endblock %}

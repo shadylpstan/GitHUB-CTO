@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Issue #{{ issue.number }} | GitHub CTO{% endblock %}
+
+{% block content %}
+  <section class="issue-hero">
+    <div>
+      <p class="eyebrow">Issue #{{ issue.number }}</p>
+      <h1>{{ issue.title }}</h1>
+      <a class="external" href="{{ issue.html_url }}">Open on GitHub</a>
+    </div>
+    <div class="severity-card {{ triage.severity|lower }}">
+      <strong>{{ triage.severity }}</strong>
+      <span>{{ triage.score }}/100 priority</span>
+    </div>
+  </section>
+
+  <section class="two-column">
+    <article class="panel">
+      <div class="panel-title">
+        <h2>Triage Decision</h2>
+        <p>{{ triage.recommended_action }}</p>
+      </div>
+      <ul class="rationale-list">
+        {% for item in triage.rationale %}
+          <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </article>
+
+    <article class="panel">
+      <div class="panel-title">
+      <h2>Codex Context Plan</h2>
+        <p>{{ plan.reasoning }}</p>
+      </div>
+      {% if plan.intent %}
+        <div class="context-note">
+          <strong>Intent: {{ plan.intent.kind }}</strong>
+          <span>{{ plan.intent.rationale }}</span>
+        </div>
+      {% endif %}
+      {% if plan.root_cause_justification %}
+        <div class="context-note">
+          <strong>Root-cause justification</strong>
+          <span>{{ plan.root_cause_justification }}</span>
+        </div>
+      {% endif %}
+      {% if not has_openai_key %}
+        <div class="flash error">Set OPENAI_API_KEY in your environment to enable Codex agent planning.</div>
+      {% endif %}
+      {% if plan.timeline %}
+        <ol class="agent-timeline compact">
+          {% for step in plan.timeline %}
+            <li class="{{ step.status }}">
+              <strong>{{ step.title }}</strong>
+              <span>{{ step.detail }}</span>
+            </li>
+          {% endfor %}
+        </ol>
+      {% endif %}
+      <form method="post" action="{{ url_for('generate_proposal', issue_number=issue.number) }}" class="file-plan" data-loading="Codex is generating a proposal...">
+        {% for file in plan.files %}
+          <label class="file-choice">
+            <input type="checkbox" name="files" value="{{ file }}" checked>
+            <span>{{ file }}</span>
+          </label>
+        {% else %}
+          <div class="empty">No candidate files were selected. Codex can still propose new files or ask for broader context.</div>
+        {% endfor %}
+        <button class="primary danger-zone" type="submit" {% if not has_openai_key %}disabled{% endif %}>
+          <span class="button-label">Ask Codex To Generate Proposal</span>
+        </button>
+      </form>
+    </article>
+  </section>
+
+  <section class="panel">
+    <div class="panel-title">
+      <h2>Issue Body</h2>
+      <p>{{ comments|length }} comments loaded from GitHub</p>
+    </div>
+    <pre class="issue-body">{{ issue.body or "No issue body provided." }}</pre>
+  </section>
+{% endblock %}

@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Review Proposal | GitHub CTO{% endblock %}
+
+{% block content %}
+  <section class="issue-hero">
+    <div>
+      <p class="eyebrow">{{ proposal.codex.agent if proposal.codex else "Codex Engineering Manager" }}</p>
+      <h1>Review proposed changes</h1>
+      <a class="external" href="{{ proposal.issue.html_url }}">Issue #{{ proposal.issue.number }}: {{ proposal.issue.title }}</a>
+    </div>
+    <div class="severity-card {{ proposal.triage.severity|lower }}">
+      <strong>{{ proposal.triage.severity }}</strong>
+      <span>{{ proposal.triage.score }}/100 priority</span>
+    </div>
+  </section>
+
+  <form method="post" action="{{ url_for('create_pr_from_proposal', proposal_id=proposal.id) }}" class="review-form" target="_blank" data-loading="Creating reviewed PR...">
+    {% if proposal.codex and proposal.codex.timeline %}
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Codex Run Timeline</h2>
+          <p>{{ proposal.codex.mode }} using {{ proposal.codex.model }}</p>
+        </div>
+        <ol class="agent-timeline">
+          {% for step in proposal.codex.timeline %}
+            <li class="{{ step.status }}">
+              <strong>{{ step.title }}</strong>
+              <span>{{ step.detail }}</span>
+            </li>
+          {% endfor %}
+        </ol>
+      </section>
+    {% endif %}
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2>PR Narrative</h2>
+        <p>Edit the summary and test plan before the PR is opened.</p>
+      </div>
+      <label>
+        <span>Summary</span>
+        <textarea name="summary" rows="4">{{ proposal.patch.summary }}</textarea>
+      </label>
+      <label>
+        <span>Test Plan</span>
+        <textarea name="test_plan" rows="4">{{ proposal.patch.test_plan }}</textarea>
+      </label>
+    </section>
+
+    {% for change in proposal.changes %}
+      <section class="panel change-card">
+        <div class="panel-title">
+          <div>
+            <h2>{{ change.path }}</h2>
+            <p>
+              {% if change.status == "new" %}
+                New file proposed by Codex.
+              {% else %}
+                Existing file modification.
+              {% endif %}
+            </p>
+          </div>
+          <span class="change-status {{ change.status }}">{{ change.status }}</span>
+        </div>
+
+        <div class="diff-wrap rich-diff" aria-label="Diff for {{ change.path }}">
+          {% for line in change.diff_lines %}
+            <div class="diff-line {{ line.kind }}">
+              <span class="diff-gutter">
+                {% if line.kind == "add" %}+{% elif line.kind == "remove" %}-{% elif line.kind == "hunk" %}@@{% else %}&nbsp;{% endif %}
+              </span>
+              <code>{{ line.text[1:] if line.kind in ["add", "remove"] else line.text }}</code>
+            </div>
+          {% endfor %}
+        </div>
+
+        <label>
+          <span>Edit final file content</span>
+          <textarea name="content_{{ loop.index0 }}" rows="18" spellcheck="false">{{ change.proposed_content }}</textarea>
+        </label>
+      </section>
+    {% endfor %}
+
+    <section class="sticky-actions">
+      <div>
+        <strong>{{ proposal.changes|length }} file change{{ '' if proposal.changes|length == 1 else 's' }} ready</strong>
+        <span>Codex has proposed the patch. GitHub is untouched until you approve.</span>
+      </div>
+      <button class="primary" type="submit"><span class="button-label">Approve Codex Run And Create PR</span></button>
+    </section>
+  </form>
+{% endblock %}
