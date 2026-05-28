@@ -71,6 +71,7 @@ def create_app() -> Flask:
                 max_steps=app.config["AGENT_MAX_STEPS"],
                 test_command=app.config["AGENT_TEST_COMMAND"],
                 test_timeout=app.config["AGENT_TEST_TIMEOUT"],
+                openai_timeout=app.config["AGENT_OPENAI_TIMEOUT"],
                 max_context_chars_per_file=min(app.config["MAX_CONTEXT_CHARS_PER_FILE"], 6000),
             ),
         )

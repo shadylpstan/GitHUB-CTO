@@ -258,6 +258,7 @@ class CodexEngineeringManager:
         history: list[dict[str, Any]],
         test_output: str = "",
         max_context_chars_per_file: int = 6000,
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         files_text = []
         for file_payload in file_payloads:
@@ -303,7 +304,7 @@ class CodexEngineeringManager:
                     ),
                 },
             ],
-            timeout=self.patch_timeout,
+            timeout=timeout or min(self.patch_timeout, 75),
         )
 
     def generate_full_file_step(
@@ -313,6 +314,7 @@ class CodexEngineeringManager:
         history: list[dict[str, Any]],
         observation: str,
         max_context_chars: int = 12000,
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         content = _trim_content(file_payload["content"], max_context_chars)
         history_text = "\n".join(
@@ -342,7 +344,7 @@ class CodexEngineeringManager:
                     ),
                 },
             ],
-            timeout=self.patch_timeout,
+            timeout=timeout or min(self.patch_timeout, 75),
         )
 
 

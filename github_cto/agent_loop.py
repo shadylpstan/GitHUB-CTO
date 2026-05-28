@@ -21,6 +21,7 @@ class AgentLoopConfig:
     max_steps: int = 4
     test_command: str = ""
     test_timeout: int = 90
+    openai_timeout: int = 60
     max_context_chars_per_file: int = 6000
 
 
@@ -50,12 +51,28 @@ class IterativeAgentLoop:
 
         for step_number in range(1, self.config.max_steps + 1):
             context_files = [workspace[path] for path in selected if path in workspace]
+            logger.info(
+                "Agent step request issue=%s step=%s files=%s timeout=%s",
+                issue_number,
+                step_number,
+                len(context_files),
+                self.config.openai_timeout,
+            )
             agent_step = self.workflow.planner.generate_agent_step(
                 issue,
                 context_files,
                 history=steps,
                 test_output=test_output,
                 max_context_chars_per_file=self.config.max_context_chars_per_file,
+                timeout=self.config.openai_timeout,
+            )
+            logger.info(
+                "Agent step response issue=%s step=%s status=%s action=%s path=%s",
+                issue_number,
+                step_number,
+                agent_step.get("status"),
+                agent_step.get("action"),
+                agent_step.get("path"),
             )
             status = (agent_step.get("status") or "continue").strip().lower()
             summary = agent_step.get("summary") or "Agent step completed."
@@ -112,12 +129,14 @@ class IterativeAgentLoop:
                     }
                 )
                 try:
+                    logger.info("Agent full-content repair request issue=%s step=%s path=%s", issue_number, step_number, path)
                     repair = self.workflow.planner.generate_full_file_step(
                         issue,
                         original,
                         history=steps,
                         observation=test_output,
                         max_context_chars=max(self.config.max_context_chars_per_file, 12000),
+                        timeout=self.config.openai_timeout,
                     )
                     repaired_path = self._safe_path(repair.get("path") or path)
                     if repaired_path != path:
@@ -136,6 +155,12 @@ class IterativeAgentLoop:
             workspace[path]["context_mode"] = "agent_workspace"
 
             test_result = self._run_tests(workspace)
+            logger.info(
+                "Agent test result issue=%s step=%s status=%s",
+                issue_number,
+                step_number,
+                test_result["status"],
+            )
             test_output = test_result["output"]
             steps.append(
                 {

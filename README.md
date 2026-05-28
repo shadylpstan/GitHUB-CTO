@@ -45,6 +45,7 @@ MAX_CONTEXT_CHARS_PER_FILE=12000
 AGENT_MAX_STEPS=4
 AGENT_TEST_COMMAND=
 AGENT_TEST_TIMEOUT=90
+AGENT_OPENAI_TIMEOUT=60
 ```
 
 The GitHub token needs repository contents write access and pull request access. For private repositories, use a fine-grained token scoped to the target repository.
