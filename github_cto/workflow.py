@@ -119,7 +119,7 @@ class GitHubCTOWorkflow:
             "ai_enabled": True,
             "timeline": codex_timeline(
                 "context",
-                selected_files=len(selected[:5]),
+                selected_files=len(selected[: self.max_selected_files]),
                 context_source=context_source,
                 intent=intent.kind,
                 evidence_hits=len(evidence_hits),

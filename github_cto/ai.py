@@ -119,7 +119,7 @@ class CodexEngineeringManager:
         self,
         issue: dict[str, Any],
         file_payloads: list[dict[str, str]],
-        max_context_chars_per_file: int,
+        max_context_chars_per_file: int = 24000,
     ) -> dict[str, Any]:
         files_text = []
         for file_payload in file_payloads:
