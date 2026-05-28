@@ -327,6 +327,11 @@ class RepositoryIndex:
         if progress:
             progress(**kwargs)
 
+    def delete_index(self, repo: str, branch: str) -> None:
+        """Delete all indexed chunks for the given repository and branch."""
+        with self._connect() as connection:
+            connection.execute("DELETE FROM chunks WHERE repo = ? AND branch = ?", (repo, branch))
+
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right))
