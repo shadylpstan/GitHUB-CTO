@@ -8,7 +8,7 @@ This folder is a Flask-free version of the GitHub CTO prototype. It keeps the le
 - OpenAI/Codex-style planning creates reviewable edits.
 - Pull requests and issue comments are the review surface.
 
-No Flask server, local dashboard, SQLite index, or Python runtime is required.
+No Flask server, local dashboard, SQLite index, or Python runtime is required for the agent runner. It can still edit Python repositories.
 
 ## What Changed From The Flask Prototype
 
