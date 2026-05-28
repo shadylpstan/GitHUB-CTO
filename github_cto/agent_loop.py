@@ -22,6 +22,7 @@ class AgentLoopConfig:
     test_command: str = ""
     test_timeout: int = 90
     openai_timeout: int = 60
+    openai_max_retries: int = 0
     max_context_chars_per_file: int = 6000
 
 
@@ -34,6 +35,14 @@ class IterativeAgentLoop:
         if not self.workflow.planner.enabled:
             raise RuntimeError("OPENAI_API_KEY is required to run the Codex agent loop.")
 
+        original_retries = self.workflow.planner.max_retries
+        self.workflow.planner.max_retries = self.config.openai_max_retries
+        try:
+            return self._run(issue_number, selected_files)
+        finally:
+            self.workflow.planner.max_retries = original_retries
+
+    def _run(self, issue_number: int, selected_files: list[str] | None = None) -> dict[str, Any]:
         context = self.workflow.issue_context(issue_number)
         issue = context["issue"]
         triage = context["triage"]

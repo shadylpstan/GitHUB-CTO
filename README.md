@@ -46,6 +46,7 @@ AGENT_MAX_STEPS=4
 AGENT_TEST_COMMAND=
 AGENT_TEST_TIMEOUT=90
 AGENT_OPENAI_TIMEOUT=60
+AGENT_OPENAI_MAX_RETRIES=0
 ```
 
 The GitHub token needs repository contents write access and pull request access. For private repositories, use a fine-grained token scoped to the target repository.

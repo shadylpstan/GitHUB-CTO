@@ -28,3 +28,4 @@ class Config:
     AGENT_TEST_TIMEOUT = int(os.getenv("AGENT_TEST_TIMEOUT", "90"))
     AGENT_OPENAI_TIMEOUT = int(os.getenv("AGENT_OPENAI_TIMEOUT", "60"))
     AGENT_OPENAI_MAX_RETRIES = int(os.getenv("AGENT_OPENAI_MAX_RETRIES", "0"))
+    AGENT_OPENAI_MAX_RETRIES = int(os.getenv("AGENT_OPENAI_MAX_RETRIES", "0"))
