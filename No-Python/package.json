@@ -1,0 +1,14 @@
+{
+  "name": "github-cto-no-python",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex-native GitHub issue to PR workflow without Flask or Python.",
+  "scripts": {
+    "start": "node src/runIssue.js",
+    "check": "node --check src/runIssue.js && node --check src/repoContext.js && node --check src/openaiPlanner.js && node --check src/github.js && node --check src/triage.js && node --check src/commentTemplates.js && node --check src/config.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
