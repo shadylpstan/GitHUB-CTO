@@ -35,11 +35,18 @@
       <span><strong id="index-chunks">{{ index_job.chunks_created if index_job.state == "running" else index_stats.chunks }}</strong> chunks</span>
       <span id="index-updated">{{ index_stats.updated_at or "not indexed yet" }}</span>
     </div>
-    <form method="post" action="{{ url_for('rebuild_index') }}" data-loading="Starting index rebuild...">
-      <button class="primary" id="rebuild-index-button" type="submit" {% if index_job.state == "running" %}disabled{% endif %}>
-        <span class="button-label">{{ "Rebuilding..." if index_job.state == "running" else "Rebuild Index" }}</span>
-      </button>
-    </form>
+    <div class="index-actions">
+      <form method="post" action="{{ url_for('rebuild_index') }}" data-loading="Starting index rebuild...">
+        <button class="primary" id="rebuild-index-button" type="submit" {% if index_job.state == "running" %}disabled{% endif %}>
+          <span class="button-label">{{ "Rebuilding..." if index_job.state == "running" else "Rebuild Index" }}</span>
+        </button>
+      </form>
+      <form method="post" action="{{ url_for('delete_index') }}" data-loading="Deleting index...">
+        <button class="secondary danger-action" id="delete-index-button" type="submit" {% if index_job.state == "running" or index_stats.chunks == 0 %}disabled{% endif %}>
+          <span class="button-label">Delete Index</span>
+        </button>
+      </form>
+    </div>
   </section>
 
   <section class="index-progress {{ 'active' if index_job.state == 'running' else '' }}" id="index-progress">
@@ -171,6 +178,7 @@
       const chunks = document.getElementById("index-chunks");
       const updated = document.getElementById("index-updated");
       const button = document.getElementById("rebuild-index-button");
+      const deleteButton = document.getElementById("delete-index-button");
       const tree = document.getElementById("index-files-tree");
       const toggleTree = document.getElementById("toggle-index-files");
 
@@ -218,6 +226,9 @@
           if (button) {
             button.disabled = indexRunning;
             button.querySelector(".button-label").textContent = indexRunning ? "Rebuilding..." : "Rebuild Index";
+          }
+          if (deleteButton) {
+            deleteButton.disabled = indexRunning || Number(status.chunks_created || {{ index_stats.chunks }}) === 0;
           }
           if (detail) {
             if (status.state === "running") {

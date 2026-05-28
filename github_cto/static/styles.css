@@ -229,6 +229,19 @@ p {
   color: var(--ink);
 }
 
+.index-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.danger-action {
+  border-color: rgba(177, 65, 43, 0.32);
+  color: #8f2f1f;
+}
+
 .small-button {
   max-width: 140px;
 }

@@ -191,6 +191,24 @@ def create_app() -> Flask:
             flash(str(exc), "error")
         return redirect(url_for("dashboard"))
 
+    @app.route("/index/delete", methods=["POST"])
+    def delete_index():
+        if index_jobs.is_running():
+            flash("Repository index rebuild is running. Wait for it to finish before deleting the index.", "error")
+            return redirect(url_for("dashboard"))
+
+        try:
+            github = make_github()
+            repo = github.repository()
+            branch = repo["default_branch"]
+            deleted = make_repo_index().delete_index(github.repo.full_name, branch)
+            app.logger.info("Deleted repository index repo=%s branch=%s rows=%s", github.repo.full_name, branch, deleted)
+            flash(f"Deleted repository index for {github.repo.full_name} on {branch}. Removed {deleted} chunk(s).", "success")
+        except Exception as exc:
+            app.logger.exception("Failed to delete repository index")
+            flash(str(exc), "error")
+        return redirect(url_for("dashboard"))
+
     @app.route("/index/status")
     def index_status():
         return jsonify(index_jobs.snapshot())

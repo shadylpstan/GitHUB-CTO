@@ -128,6 +128,18 @@ class RepositoryIndex:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def delete_index(self, repo: str, branch: str) -> int:
+        connection = self._connect()
+        try:
+            cursor = connection.execute(
+                "DELETE FROM chunks WHERE repo = ? AND branch = ?",
+                (repo, branch),
+            )
+            connection.commit()
+            return cursor.rowcount
+        finally:
+            connection.close()
+
     def rebuild(
         self,
         github: GitHubClient,
