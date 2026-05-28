@@ -25,8 +25,13 @@ async function main() {
       throw new Error("No readable repository files were found for context.");
     }
 
-    const planner = new OpenAIPlanner({ apiKey: config.openaiApiKey, model: config.openaiModel });
-    const patch = await planner.generatePatch({ issue, comments, triage, contextFiles });
+    const patch = await generatePatchWithBackoff({
+      config,
+      issue,
+      comments,
+      triage,
+      contextFiles,
+    });
     if (!patch.changes.length) {
       throw new Error(`Model returned no file changes. Summary: ${patch.summary}`);
     }
@@ -116,6 +121,58 @@ function runTests(command) {
   } catch (error) {
     return { command, status: `failed (${error.status || "unknown"})` };
   }
+}
+
+async function generatePatchWithBackoff({ config, issue, comments, triage, contextFiles }) {
+  const attempts = [
+    { files: contextFiles, chars: config.maxContextCharsPerFile },
+    { files: contextFiles.slice(0, Math.max(2, Math.ceil(contextFiles.length / 2))), chars: Math.min(config.maxContextCharsPerFile, 8000) },
+    { files: contextFiles.slice(0, 2), chars: Math.min(config.maxContextCharsPerFile, 5000) },
+  ];
+
+  let lastError;
+  for (const attempt of attempts) {
+    const planner = new OpenAIPlanner({
+      apiKey: config.openaiApiKey,
+      model: config.openaiModel,
+      timeoutMs: config.openaiTimeoutMs,
+      maxRetries: config.openaiMaxRetries,
+      maxContextCharsPerFile: attempt.chars,
+    });
+    try {
+      console.log(`Generating patch with ${attempt.files.length} file(s), ${attempt.chars} chars/file.`);
+      return await planner.generatePatch({
+        issue,
+        comments,
+        triage,
+        contextFiles: attempt.files,
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isOpenAIBackoffError(error)) {
+        throw error;
+      }
+      console.warn(`OpenAI patch attempt failed, retrying with smaller context: ${error.message}`);
+    }
+  }
+  throw lastError;
+}
+
+function isOpenAIBackoffError(error) {
+  const message = String(error?.message || "");
+  const code = error?.cause?.code || error?.code || "";
+  return (
+    error?.name === "AbortError" ||
+    message.includes("fetch failed") ||
+    message.includes("OpenAI API 429") ||
+    message.includes("OpenAI API 500") ||
+    message.includes("OpenAI API 502") ||
+    message.includes("OpenAI API 503") ||
+    message.includes("OpenAI API 504") ||
+    message.toLowerCase().includes("timeout") ||
+    code.includes("TIMEOUT") ||
+    code === "UND_ERR_HEADERS_TIMEOUT"
+  );
 }
 
 main();

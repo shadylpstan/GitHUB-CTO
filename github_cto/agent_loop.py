@@ -1,0 +1,224 @@
+from __future__ import annotations
+
+import logging
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .patch_utils import PatchApplyError, apply_unified_diff
+from .proposals import unified_diff
+from .workflow import GitHubCTOWorkflow, codex_timeline
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentLoopConfig:
+    max_steps: int = 4
+    test_command: str = ""
+    test_timeout: int = 90
+    max_context_chars_per_file: int = 6000
+
+
+class IterativeAgentLoop:
+    def __init__(self, workflow: GitHubCTOWorkflow, config: AgentLoopConfig):
+        self.workflow = workflow
+        self.config = config
+
+    def run(self, issue_number: int, selected_files: list[str] | None = None) -> dict[str, Any]:
+        if not self.workflow.planner.enabled:
+            raise RuntimeError("OPENAI_API_KEY is required to run the Codex agent loop.")
+
+        context = self.workflow.issue_context(issue_number)
+        issue = context["issue"]
+        triage = context["triage"]
+        base_branch = self.workflow.github.default_branch()
+        selected = (selected_files or self.workflow.plan_files(issue_number)["files"])[: self.workflow.max_selected_files]
+        if not selected:
+            raise RuntimeError("No files were selected for the agent run.")
+
+        originals = self.workflow._proposal_context_files(selected, base_branch)
+        workspace = {item["path"]: dict(item) for item in originals}
+        steps: list[dict[str, Any]] = []
+        test_output = ""
+        patch_summary = "Iterative agent run completed."
+        test_plan = "Review final diff and run the repository test suite."
+
+        for step_number in range(1, self.config.max_steps + 1):
+            context_files = [workspace[path] for path in selected if path in workspace]
+            agent_step = self.workflow.planner.generate_agent_step(
+                issue,
+                context_files,
+                history=steps,
+                test_output=test_output,
+                max_context_chars_per_file=self.config.max_context_chars_per_file,
+            )
+            status = (agent_step.get("status") or "continue").strip().lower()
+            summary = agent_step.get("summary") or "Agent step completed."
+            patch_summary = summary or patch_summary
+            test_plan = agent_step.get("test_plan") or test_plan
+
+            if status == "complete":
+                steps.append(
+                    {
+                        "step": step_number,
+                        "action": "complete",
+                        "status": "done",
+                        "summary": summary,
+                        "observation": test_output,
+                    }
+                )
+                break
+
+            path = self._safe_path(agent_step.get("path") or "")
+            original = workspace.get(path)
+            if original is None:
+                original = self._fetch_or_new(path, base_branch)
+                workspace[path] = original
+                if path not in selected:
+                    selected.append(path)
+
+            proposed = self._apply_step(path, original["content"], agent_step)
+            workspace[path]["content"] = proposed
+            workspace[path]["proposed_content"] = proposed
+            workspace[path]["context_mode"] = "agent_workspace"
+
+            test_result = self._run_tests(workspace)
+            test_output = test_result["output"]
+            steps.append(
+                {
+                    "step": step_number,
+                    "action": "edit_file",
+                    "status": "done",
+                    "path": path,
+                    "summary": summary,
+                    "test_status": test_result["status"],
+                    "observation": test_output[-3000:],
+                }
+            )
+            if test_result["status"] == "passed":
+                break
+
+        changes = self._changes(originals, workspace)
+        if not changes:
+            raise RuntimeError("Agent loop completed without producing file changes.")
+
+        return {
+            "issue": {"number": issue.get("number"), "title": issue.get("title"), "html_url": issue.get("html_url")},
+            "triage": {
+                "severity": triage.severity,
+                "score": triage.score,
+                "rationale": triage.rationale,
+                "recommended_action": triage.recommended_action,
+            },
+            "patch": {
+                "summary": patch_summary,
+                "test_plan": test_plan,
+                "agent_steps": steps,
+            },
+            "base_branch": base_branch,
+            "changes": changes,
+            "codex": {
+                "agent": "Codex Iterative Agent",
+                "mode": "small-step Flask orchestrated loop",
+                "model": self.workflow.planner.model,
+                "timeline": codex_timeline(
+                    "review",
+                    proposed_files=len(changes),
+                    base_branch=base_branch,
+                    agent_steps=len(steps),
+                ),
+            },
+        }
+
+    def _safe_path(self, path: str) -> str:
+        normalized = path.strip().replace("\\", "/").lstrip("/")
+        if not normalized or ".." in normalized.split("/"):
+            raise RuntimeError(f"Codex returned an unsafe path: {path}")
+        return normalized
+
+    def _fetch_or_new(self, path: str, base_branch: str) -> dict[str, Any]:
+        try:
+            payload = self.workflow.github.get_file(path, ref=base_branch)
+            payload["status"] = "modified"
+            return payload
+        except Exception:
+            return {"path": path, "sha": None, "content": "", "status": "new"}
+
+    def _apply_step(self, path: str, original_content: str, agent_step: dict[str, Any]) -> str:
+        if agent_step.get("new_file_content") is not None:
+            return agent_step["new_file_content"]
+        diff = agent_step.get("unified_diff") or ""
+        if not diff.strip():
+            raise RuntimeError(f"Agent step for {path} did not include a patch.")
+        try:
+            return apply_unified_diff(original_content, diff)
+        except PatchApplyError as exc:
+            raise RuntimeError(f"Agent produced a patch that could not be applied to {path}.") from exc
+
+    def _run_tests(self, workspace: dict[str, dict[str, Any]]) -> dict[str, str]:
+        if not self.config.test_command:
+            return {"status": "skipped", "output": "No AGENT_TEST_COMMAND configured."}
+
+        source_root = Path.cwd()
+        with tempfile.TemporaryDirectory(prefix="github-cto-agent-") as tmp:
+            tmp_root = Path(tmp)
+            shutil.copytree(
+                source_root,
+                tmp_root,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(
+                    ".git",
+                    ".venv",
+                    "venv",
+                    "__pycache__",
+                    ".pytest_cache",
+                    "instance",
+                    "Github-CTO-backup-before-agent-loop-*",
+                ),
+            )
+            for path, payload in workspace.items():
+                destination = tmp_root / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(payload["content"], encoding="utf-8")
+
+            try:
+                completed = subprocess.run(
+                    self.config.test_command,
+                    cwd=tmp_root,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.config.test_timeout,
+                )
+                output = (completed.stdout or "") + (completed.stderr or "")
+                status = "passed" if completed.returncode == 0 else f"failed ({completed.returncode})"
+                return {"status": status, "output": output[-5000:] or "Test command produced no output."}
+            except subprocess.TimeoutExpired as exc:
+                output = ((exc.stdout or "") + (exc.stderr or "")) if isinstance(exc.stdout, str) else ""
+                return {"status": "timeout", "output": (output[-5000:] or "Test command timed out.")}
+
+    def _changes(self, originals: list[dict[str, Any]], workspace: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        original_by_path = {item["path"]: item for item in originals}
+        changes = []
+        for path, payload in workspace.items():
+            original = original_by_path.get(path)
+            before = original["content"] if original else ""
+            after = payload["content"]
+            if before == after:
+                continue
+            changes.append(
+                {
+                    "path": path,
+                    "status": "modified" if original else "new",
+                    "sha": original["sha"] if original else None,
+                    "original_content": before,
+                    "proposed_content": after,
+                    "unified_diff": unified_diff(path, before, after),
+                }
+            )
+        return changes

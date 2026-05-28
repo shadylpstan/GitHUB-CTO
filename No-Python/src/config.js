@@ -8,6 +8,9 @@ export function getConfig() {
     issueNumber: numberEnv("GH_CTO_ISSUE_NUMBER"),
     maxFiles: numberEnv("GH_CTO_MAX_FILES", 8),
     maxFileBytes: numberEnv("GH_CTO_MAX_FILE_BYTES", 80000),
+    maxContextCharsPerFile: numberEnv("GH_CTO_MAX_CONTEXT_CHARS_PER_FILE", 12000),
+    openaiTimeoutMs: numberEnv("GH_CTO_OPENAI_TIMEOUT_MS", 180000),
+    openaiMaxRetries: numberEnv("GH_CTO_OPENAI_MAX_RETRIES", 2),
     testCommand: process.env.GH_CTO_TEST_COMMAND || "",
   };
 }

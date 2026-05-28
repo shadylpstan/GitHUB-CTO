@@ -251,6 +251,58 @@ class CodexEngineeringManager:
             timeout=self.patch_timeout,
         )
 
+    def generate_agent_step(
+        self,
+        issue: dict[str, Any],
+        file_payloads: list[dict[str, str]],
+        history: list[dict[str, Any]],
+        test_output: str = "",
+        max_context_chars_per_file: int = 6000,
+    ) -> dict[str, Any]:
+        files_text = []
+        for file_payload in file_payloads:
+            content = _trim_content(file_payload["content"], max_context_chars_per_file)
+            summary = file_payload.get("summary", "")
+            extras = f"\n# Summary\n{summary}\n" if summary else ""
+            files_text.append(
+                f"--- FILE: {file_payload['path']} ---{extras}\n{content}\n--- END FILE ---"
+            )
+        history_text = "\n".join(
+            f"- step {item.get('step')}: {item.get('action')} {item.get('path', '')} - {item.get('summary', '')}"
+            for item in history[-8:]
+        )
+        return self._chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a Codex-style coding agent working in small safe steps. "
+                        "Do not try to rewrite the whole PR at once. Choose exactly one next action. "
+                        "Return JSON only. Schema: "
+                        "{status, summary, action, path, unified_diff, new_file_content, test_plan}. "
+                        "status must be continue or complete. "
+                        "If more work is needed, status=continue and action=edit_file. "
+                        "For existing files, provide a valid unified_diff with exact context from the provided file. "
+                        "For new files, provide new_file_content. "
+                        "If the issue appears fixed or no safe next edit exists, status=complete. "
+                        "Keep edits minimal and preserve style."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"GitHub issue #{issue.get('number')}: {issue.get('title')}\n\n"
+                        f"Issue body:\n{issue.get('body') or ''}\n\n"
+                        f"Previous agent steps:\n{history_text or 'No previous steps.'}\n\n"
+                        f"Latest test output or observation:\n{test_output or 'No tests have run yet.'}\n\n"
+                        "Current files:\n\n"
+                        + "\n\n".join(files_text)
+                    ),
+                },
+            ],
+            timeout=self.patch_timeout,
+        )
+
 
 def _trim_content(content: str, max_chars: int) -> str:
     if len(content) <= max_chars:

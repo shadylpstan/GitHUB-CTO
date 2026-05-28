@@ -66,6 +66,9 @@ Configure repository variables if needed:
 - `GH_CTO_TEST_COMMAND`: command to run before opening a PR, such as `npm test` or `pytest`. Empty means skip tests.
 - `GH_CTO_MAX_FILES`: default `8`.
 - `GH_CTO_MAX_FILE_BYTES`: default `80000`.
+- `GH_CTO_MAX_CONTEXT_CHARS_PER_FILE`: default `12000`.
+- `GH_CTO_OPENAI_TIMEOUT_MS`: default `180000`.
+- `GH_CTO_OPENAI_MAX_RETRIES`: default `2`.
 
 ## Triggering A Run
 

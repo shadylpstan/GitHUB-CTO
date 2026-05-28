@@ -23,3 +23,6 @@ class Config:
     ENABLE_FILE_SUMMARIES = os.getenv("ENABLE_FILE_SUMMARIES", "true").lower() == "true"
     MAX_REPO_FILES = int(os.getenv("MAX_REPO_FILES", "350"))
     MAX_FILE_BYTES = int(os.getenv("MAX_FILE_BYTES", "20000"))
+    AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "4"))
+    AGENT_TEST_COMMAND = os.getenv("AGENT_TEST_COMMAND", "")
+    AGENT_TEST_TIMEOUT = int(os.getenv("AGENT_TEST_TIMEOUT", "90"))

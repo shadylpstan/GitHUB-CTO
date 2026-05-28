@@ -41,7 +41,10 @@ OPENAI_PLANNING_TIMEOUT=60
 OPENAI_PATCH_TIMEOUT=180
 OPENAI_MAX_RETRIES=2
 MAX_SELECTED_FILES=8
-MAX_CONTEXT_CHARS_PER_FILE=24000
+MAX_CONTEXT_CHARS_PER_FILE=12000
+AGENT_MAX_STEPS=4
+AGENT_TEST_COMMAND=
+AGENT_TEST_TIMEOUT=90
 ```
 
 The GitHub token needs repository contents write access and pull request access. For private repositories, use a fine-grained token scoped to the target repository.
@@ -95,6 +98,7 @@ The index intentionally skips noisy/generated files such as `__pycache__`, `node
 
 - `Fast Proposal`: Codex first creates an edit plan, then generates compact unified diffs for the smallest likely file set.
 - `Deep Proposal`: Codex skips the edit-plan narrowing step and patches the selected files directly.
+- `Iterative Agent Run`: Codex makes one small edit step at a time, applies each step to an agent workspace, optionally runs `AGENT_TEST_COMMAND` in a temporary copy, and stops at a final review checkpoint.
 
 The app logs proposal mode, selected files, planned files, context files, and generated changes to `instance/github_cto.log`.
 

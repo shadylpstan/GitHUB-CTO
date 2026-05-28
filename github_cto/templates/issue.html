@@ -84,6 +84,18 @@
           </button>
         </div>
       </form>
+      <form method="post" action="{{ url_for('run_agent_loop', issue_number=issue.number) }}" class="agent-run-form" data-loading="Codex agent is iterating...">
+        {% for file in plan.files %}
+          <input type="hidden" name="files" value="{{ file }}">
+        {% endfor %}
+        <div class="context-note">
+          <strong>Iterative Agent Run</strong>
+          <span>Runs small edit steps, applies each patch to an agent workspace, optionally runs AGENT_TEST_COMMAND, then stops at one final review checkpoint.</span>
+        </div>
+        <button class="primary" type="submit" {% if not has_openai_key %}disabled{% endif %}>
+          <span class="button-label">Run Iterative Agent</span>
+        </button>
+      </form>
     </article>
   </section>
 

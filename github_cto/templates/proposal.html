@@ -32,6 +32,32 @@
       </section>
     {% endif %}
 
+    {% if proposal.patch.agent_steps %}
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Agent Step Trace</h2>
+          <p>Internal steps ran automatically. You only approve the final diff.</p>
+        </div>
+        <ol class="agent-step-list">
+          {% for step in proposal.patch.agent_steps %}
+            <li>
+              <strong>Step {{ step.step }}: {{ step.action }}</strong>
+              <span>{{ step.summary }}</span>
+              {% if step.path %}
+                <code>{{ step.path }}</code>
+              {% endif %}
+              {% if step.test_status %}
+                <small>Tests: {{ step.test_status }}</small>
+              {% endif %}
+              {% if step.observation %}
+                <pre>{{ step.observation }}</pre>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      </section>
+    {% endif %}
+
     <section class="panel">
       <div class="panel-title">
         <h2>PR Narrative</h2>

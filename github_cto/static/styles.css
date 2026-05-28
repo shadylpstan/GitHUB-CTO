@@ -677,6 +677,50 @@ button.loading::before {
   margin: 16px 0;
 }
 
+.agent-run-form {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.agent-step-list {
+  display: grid;
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agent-step-list li {
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.agent-step-list strong,
+.agent-step-list span,
+.agent-step-list small,
+.agent-step-list code {
+  display: block;
+}
+
+.agent-step-list span,
+.agent-step-list small {
+  color: var(--muted);
+}
+
+.agent-step-list pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: #18201d;
+  color: #f7efe1;
+}
+
 .flash-stack {
   display: grid;
   gap: 10px;

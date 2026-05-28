@@ -6,6 +6,7 @@ from logging.handlers import RotatingFileHandler
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
+from .agent_loop import AgentLoopConfig, IterativeAgentLoop
 from .ai import CodexEngineeringManager, CodexTimeout, CodexTransientError
 from .config import Config
 from .github_client import GitHubClient, GitHubError
@@ -62,6 +63,17 @@ def create_app() -> Flask:
 
     def proposal_store() -> ProposalStore:
         return ProposalStore(app.instance_path + "/proposals")
+
+    def make_agent_loop() -> IterativeAgentLoop:
+        return IterativeAgentLoop(
+            workflow=make_workflow(),
+            config=AgentLoopConfig(
+                max_steps=app.config["AGENT_MAX_STEPS"],
+                test_command=app.config["AGENT_TEST_COMMAND"],
+                test_timeout=app.config["AGENT_TEST_TIMEOUT"],
+                max_context_chars_per_file=min(app.config["MAX_CONTEXT_CHARS_PER_FILE"], 6000),
+            ),
+        )
 
     @app.context_processor
     def inject_globals():
@@ -233,6 +245,40 @@ def create_app() -> Flask:
             return redirect(url_for("issue_detail", issue_number=issue_number))
         except Exception as exc:
             app.logger.exception("Proposal generation failed issue=%s", issue_number)
+            flash(str(exc), "error")
+            return redirect(url_for("issue_detail", issue_number=issue_number))
+
+    @app.route("/issues/<int:issue_number>/agent-run", methods=["POST"])
+    def run_agent_loop(issue_number: int):
+        selected_files = request.form.getlist("files")
+        try:
+            app.logger.info(
+                "Starting iterative agent run issue=%s selected_files=%s",
+                issue_number,
+                len(selected_files),
+            )
+            agent = make_agent_loop()
+            proposal = agent.run(issue_number, selected_files or None)
+            proposal_id = proposal_store().save(proposal)
+            app.logger.info(
+                "Iterative agent run completed issue=%s proposal_id=%s changes=%s steps=%s",
+                issue_number,
+                proposal_id,
+                len(proposal.get("changes", [])),
+                len(proposal.get("patch", {}).get("agent_steps", [])),
+            )
+            flash("Codex agent run completed. Review the final diff before creating the PR.", "success")
+            return redirect(url_for("review_proposal", proposal_id=proposal_id))
+        except CodexTimeout as exc:
+            app.logger.warning("Agent run timed out issue=%s: %s", issue_number, exc)
+            flash("Codex timed out during the agent run. Reduce selected files or retry.", "error")
+            return redirect(url_for("issue_detail", issue_number=issue_number))
+        except CodexTransientError as exc:
+            app.logger.warning("Agent run hit transient OpenAI error issue=%s: %s", issue_number, exc)
+            flash("OpenAI is temporarily unavailable. Please retry in a moment.", "error")
+            return redirect(url_for("issue_detail", issue_number=issue_number))
+        except Exception as exc:
+            app.logger.exception("Iterative agent run failed issue=%s", issue_number)
             flash(str(exc), "error")
             return redirect(url_for("issue_detail", issue_number=issue_number))
 
