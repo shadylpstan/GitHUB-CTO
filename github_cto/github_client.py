@@ -46,7 +46,10 @@ class GitHubClient:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         url = f"{self.base_url}{path}"
-        response = self.session.request(method, url, timeout=40, **kwargs)
+        try:
+            response = self.session.request(method, url, timeout=40, **kwargs)
+        except requests.RequestException as exc:
+            raise GitHubError(f"Could not reach GitHub API: {exc}") from exc
         if response.status_code >= 400:
             message = response.text
             try:
@@ -80,6 +83,14 @@ class GitHubClient:
 
     def default_branch(self) -> str:
         return self.repository()["default_branch"]
+
+    def list_branches(self, limit: int = 100) -> list[str]:
+        branches = self._request(
+            "GET",
+            f"/repos/{self.repo.full_name}/branches",
+            params={"per_page": min(limit, 100)},
+        )
+        return [branch["name"] for branch in branches if branch.get("name")]
 
     def get_ref_sha(self, branch: str) -> str:
         ref = self._request("GET", f"/repos/{self.repo.full_name}/git/ref/heads/{branch}")

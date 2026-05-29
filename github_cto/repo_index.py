@@ -145,13 +145,14 @@ class RepositoryIndex:
         github: GitHubClient,
         max_files: int,
         max_file_bytes: int,
+        branch: str | None = None,
         progress: ProgressCallback | None = None,
     ) -> IndexStats:
         if not self.embedder.enabled:
             raise RepoIndexError("OPENAI_API_KEY is required to rebuild the repository index.")
 
         repo = github.repo.full_name
-        branch = github.default_branch()
+        branch = branch or github.default_branch()
         self._progress(progress, message="Fetching repository tree...", repo=repo, branch=branch)
         logger.info("Index rebuild started for %s on %s", repo, branch)
         tree = github.get_tree(branch=branch)

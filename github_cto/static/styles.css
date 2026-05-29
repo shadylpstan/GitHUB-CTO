@@ -150,6 +150,43 @@ nav {
   padding: 9px 12px;
 }
 
+.branch-panel {
+  background: rgba(255, 255, 255, 0.48);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  margin-bottom: 22px;
+  padding: 14px;
+}
+
+.branch-form,
+.branch-panel {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.branch-form label,
+.branch-panel label {
+  flex: 1 1 220px;
+  margin: 0;
+}
+
+.branch-summary {
+  flex: 1 1 220px;
+}
+
+.branch-summary strong,
+.branch-summary span {
+  display: block;
+}
+
+.branch-summary span {
+  color: var(--muted);
+  font-family: "Courier New", monospace;
+  margin-top: 6px;
+}
+
 h1 {
   font-size: clamp(42px, 7vw, 82px);
   letter-spacing: -4px;
@@ -294,7 +331,8 @@ label span {
   margin-bottom: 8px;
 }
 
-input {
+input,
+select {
   background: rgba(255, 255, 255, 0.74);
   border: 1px solid var(--line);
   border-radius: 16px;

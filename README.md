@@ -10,6 +10,7 @@ Codex-native Engineering Manager for GitHub issues. This Flask app connects to a
 - Codex run timeline: intake, triage, repo scan, context selection, patch proposal, human review, GitHub execution.
 - Repository file discovery through the GitHub tree API.
 - Local SQLite vector index for semantic code discovery with file path, language, line range, SHA, and chunk metadata.
+- Session branch controls for the branch Codex reads/inspects and the branch PRs target.
 - Codex-style file selection and patch generation, including new files when needed.
 - Reviewable diffs and editable proposed file contents before any PR is opened.
 - Real branch creation, commits, pull request creation, and issue comments after approval.
@@ -83,15 +84,16 @@ python app.py
 1. Connect a GitHub repository.
 2. Open the dashboard.
 3. Click `Rebuild Index` once so Codex can use semantic repository memory.
-4. Pick a real GitHub issue.
-5. Review severity and selected context files.
-6. Click `Fast Proposal` for the optimized two-stage path, or `Deep Proposal` for broader full-file context.
-7. Review the Codex timeline, inspect diffs, edit proposed file contents if needed, then approve the run.
-8. The app creates a real branch, commits the reviewed changes, opens a PR, and comments on the issue.
+4. Choose the branch Codex should read/inspect and the branch the PR should target. Both default to the repository default branch.
+5. Pick a real GitHub issue.
+6. Review severity and selected context files.
+7. Click `Fast Proposal` for the optimized two-stage path, `Deep Proposal` for broader full-file context, or `Aider Run` for the Aider CLI backend.
+8. Review the Codex timeline, inspect diffs, edit proposed file contents if needed, then approve the run.
+9. The app creates a real branch from the selected PR target branch, commits the reviewed changes, opens a PR into that target branch, and comments on the issue.
 
 ## Index Progress And Logs
 
-The repository index rebuild runs in the background. The dashboard polls `/index/status` every second and updates:
+The repository index rebuild runs in the background for the selected read/inspect branch. The dashboard polls `/index/status` every second and updates:
 
 - files scanned
 - files indexed

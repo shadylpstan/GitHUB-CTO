@@ -14,6 +14,29 @@
     </div>
   </section>
 
+  <section class="branch-panel">
+    <form method="post" action="{{ url_for('update_branch_settings') }}" class="branch-form" data-loading="Saving branch settings...">
+      <input type="hidden" name="next" value="{{ url_for('issue_detail', issue_number=issue.number) }}">
+      <label>
+        <span>Read / inspect branch</span>
+        <select name="read_branch">
+          {% for branch in branches %}
+            <option value="{{ branch }}" {% if branch == branch_settings.read_branch %}selected{% endif %}>{{ branch }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>PR target branch</span>
+        <select name="target_branch">
+          {% for branch in branches %}
+            <option value="{{ branch }}" {% if branch == branch_settings.target_branch %}selected{% endif %}>{{ branch }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="secondary" type="submit"><span class="button-label">Save Branches</span></button>
+    </form>
+  </section>
+
   <section class="two-column">
     <article class="panel">
       <div class="panel-title">
@@ -72,6 +95,8 @@
         </ol>
       {% endif %}
       <form method="post" action="{{ url_for('generate_proposal', issue_number=issue.number) }}" class="file-plan" data-loading="Codex is generating a proposal...">
+        <input type="hidden" name="read_branch" value="{{ branch_settings.read_branch }}">
+        <input type="hidden" name="target_branch" value="{{ branch_settings.target_branch }}">
         {% for file in plan.files %}
           <label class="file-choice">
             <input type="checkbox" name="files" value="{{ file }}" {% if file in plan.checked_files %}checked{% endif %}>
@@ -80,7 +105,7 @@
         {% else %}
           <div class="empty">No candidate files were selected. Codex can still propose new files or ask for broader context.</div>
         {% endfor %}
-        <small class="form-hint">Top files are checked by default. Extra candidates are shown unchecked so you can include them when needed.</small>
+        <small class="form-hint">Top files are checked by default from {{ branch_settings.read_branch }}. PRs will target {{ branch_settings.target_branch }}.</small>
         <div class="proposal-actions">
           <button class="primary danger-zone" type="submit" name="proposal_mode" value="fast" {% if not has_openai_key %}disabled{% endif %}>
             <span class="button-label">Fast Proposal</span>

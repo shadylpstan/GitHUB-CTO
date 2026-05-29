@@ -33,14 +33,20 @@ class IterativeAgentLoop:
         self.workflow = workflow
         self.config = config
 
-    def run(self, issue_number: int, selected_files: list[str] | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        issue_number: int,
+        selected_files: list[str] | None = None,
+        read_branch: str | None = None,
+        target_branch: str | None = None,
+    ) -> dict[str, Any]:
         if not self.workflow.planner.enabled:
             raise RuntimeError("OPENAI_API_KEY is required to run the Codex agent loop.")
 
         original_retries = self.workflow.planner.max_retries
         self.workflow.planner.max_retries = self.config.openai_max_retries
         try:
-            return self._run(issue_number, selected_files)
+            return self._run(issue_number, selected_files, read_branch=read_branch, target_branch=target_branch)
         finally:
             self.workflow.planner.max_retries = original_retries
 
@@ -57,7 +63,14 @@ class IterativeAgentLoop:
         original_retries = self.workflow.planner.max_retries
         self.workflow.planner.max_retries = self.config.openai_max_retries
         try:
-            retry_result = self._run(issue_number, [path], seed_changes=proposal.get("changes", []), prior_steps=prior_steps or [])
+            retry_result = self._run(
+                issue_number,
+                [path],
+                seed_changes=proposal.get("changes", []),
+                prior_steps=prior_steps or [],
+                read_branch=proposal.get("read_branch") or proposal.get("base_branch"),
+                target_branch=proposal.get("target_branch") or proposal.get("base_branch"),
+            )
             return retry_result
         finally:
             self.workflow.planner.max_retries = original_retries
@@ -68,19 +81,22 @@ class IterativeAgentLoop:
         selected_files: list[str] | None = None,
         seed_changes: list[dict[str, Any]] | None = None,
         prior_steps: list[dict[str, Any]] | None = None,
+        read_branch: str | None = None,
+        target_branch: str | None = None,
     ) -> dict[str, Any]:
         logger.info("Agent loading issue context issue=%s", issue_number)
         context = self.workflow.issue_context(issue_number)
         issue = context["issue"]
         triage = context["triage"]
-        logger.info("Agent loading default branch issue=%s", issue_number)
-        base_branch = self.workflow.github.default_branch()
-        selected = (selected_files or self.workflow.plan_files(issue_number)["files"])[: self.workflow.max_selected_files]
+        read_branch = read_branch or self.workflow.github.default_branch()
+        target_branch = target_branch or read_branch
+        logger.info("Agent loading read branch issue=%s branch=%s", issue_number, read_branch)
+        selected = (selected_files or self.workflow.plan_files(issue_number, branch=read_branch)["files"])[: self.workflow.max_selected_files]
         if not selected:
             raise RuntimeError("No files were selected for the agent run.")
 
         logger.info("Agent fetching selected files issue=%s files=%s", issue_number, selected)
-        originals = self.workflow._proposal_context_files(selected, base_branch)
+        originals = self.workflow._proposal_context_files(selected, read_branch)
         logger.info("Agent fetched selected files issue=%s count=%s", issue_number, len(originals))
         workspace = {item["path"]: dict(item) for item in originals}
         for change in seed_changes or []:
@@ -158,7 +174,7 @@ class IterativeAgentLoop:
             )
             original = workspace.get(path)
             if original is None:
-                original = self._fetch_or_new(path, base_branch)
+                original = self._fetch_or_new(path, read_branch)
                 workspace[path] = original
                 if path not in selected:
                     selected.append(path)
@@ -303,7 +319,9 @@ class IterativeAgentLoop:
                 "test_plan": test_plan,
                 "agent_steps": steps,
             },
-            "base_branch": base_branch,
+            "base_branch": read_branch,
+            "read_branch": read_branch,
+            "target_branch": target_branch,
             "changes": changes,
             "codex": {
                 "agent": "Codex Iterative Agent",
@@ -312,7 +330,8 @@ class IterativeAgentLoop:
                 "timeline": codex_timeline(
                     "review",
                     proposed_files=len(changes),
-                    base_branch=base_branch,
+                    read_branch=read_branch,
+                    target_branch=target_branch,
                     agent_steps=len(steps),
                 ),
             },

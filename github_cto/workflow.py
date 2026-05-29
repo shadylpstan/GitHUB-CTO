@@ -132,8 +132,8 @@ class GitHubCTOWorkflow:
         triage = triage_issue(issue, comments)
         return {"issue": issue, "comments": comments, "triage": triage}
 
-    def candidate_files(self) -> list[str]:
-        tree = self.github.get_tree()
+    def candidate_files(self, branch: str | None = None) -> list[str]:
+        tree = self.github.get_tree(branch=branch)
         paths = [
             item["path"]
             for item in tree
@@ -143,13 +143,14 @@ class GitHubCTOWorkflow:
         filtered = [path for path in paths if not any(part in path for part in ignored)]
         return filtered[: self.max_repo_files]
 
-    def plan_files(self, issue_number: int) -> dict[str, Any]:
+    def plan_files(self, issue_number: int, branch: str | None = None) -> dict[str, Any]:
+        branch = branch or self.github.default_branch()
         issue = self.github.get_issue(issue_number)
         intent = classify_issue_intent(issue)
         scope = classify_issue_scope(issue)
-        indexed_files = self._indexed_candidate_files(issue)
-        base_files = indexed_files or self.candidate_files()
-        evidence_hits = self._evidence_hits(issue, base_files)
+        indexed_files = self._indexed_candidate_files(issue, branch)
+        base_files = indexed_files or self.candidate_files(branch)
+        evidence_hits = self._evidence_hits(issue, base_files, branch)
         evidence_scores = {hit.path: hit.score for hit in evidence_hits}
         files = architectural_rank(base_files, intent, evidence_scores=evidence_scores)
         files = self._balance_scope_candidates(files, scope)
@@ -168,6 +169,7 @@ class GitHubCTOWorkflow:
                 "timeline": codex_timeline(
                     "context",
                     context_source=context_source,
+                    read_branch=branch,
                     intent=intent.kind,
                     scope=scope.kind,
                     evidence_hits=len(evidence_hits),
@@ -196,30 +198,29 @@ class GitHubCTOWorkflow:
                 "context",
                 selected_files=len(selected[: self.default_selected_files]),
                 context_source=context_source,
+                read_branch=branch,
                 intent=intent.kind,
                 scope=scope.kind,
                 evidence_hits=len(evidence_hits),
             ),
         }
 
-    def _indexed_candidate_files(self, issue: dict[str, Any]) -> list[str]:
+    def _indexed_candidate_files(self, issue: dict[str, Any], branch: str) -> list[str]:
         if not self.repo_index:
             return []
         repo = self.github.repo.full_name
-        branch = self.github.default_branch()
         labels = " ".join(label.get("name", "") for label in issue.get("labels", []))
         query = f"{issue.get('title') or ''}\n\n{issue.get('body') or ''}\n\nlabels: {labels}"
         indexed_paths = self.repo_index.top_paths(repo, branch, query, limit=24)
         if not indexed_paths:
             return []
-        all_files = self.candidate_files()
+        all_files = self.candidate_files(branch)
         indexed_set = set(indexed_paths)
         remaining = [path for path in all_files if path not in indexed_set]
         return indexed_paths + remaining[: max(0, self.max_repo_files - len(indexed_paths))]
 
-    def _evidence_hits(self, issue: dict[str, Any], files: list[str]) -> list[Any]:
+    def _evidence_hits(self, issue: dict[str, Any], files: list[str], branch: str) -> list[Any]:
         issue_text = f"{issue.get('title') or ''}\n\n{issue.get('body') or ''}"
-        branch = self.github.default_branch()
         cache: dict[str, str | None] = {}
 
         def fetch(path: str) -> str | None:
@@ -316,6 +317,8 @@ class GitHubCTOWorkflow:
         issue_number: int,
         selected_files: list[str] | None = None,
         proposal_mode: str = "fast",
+        read_branch: str | None = None,
+        target_branch: str | None = None,
     ) -> dict[str, Any]:
         if not self.planner.enabled:
             raise RuntimeError("OPENAI_API_KEY is required to create autonomous code changes.")
@@ -323,10 +326,11 @@ class GitHubCTOWorkflow:
         context = self.issue_context(issue_number)
         issue = context["issue"]
         triage = context["triage"]
-        base_branch = self.github.default_branch()
+        read_branch = read_branch or self.github.default_branch()
+        target_branch = target_branch or self.github.default_branch()
 
         if selected_files is None:
-            selected_files = self.plan_files(issue_number)["files"]
+            selected_files = self.plan_files(issue_number, branch=read_branch)["files"]
         selected_files = (selected_files or [])[: self.max_selected_files]
         proposal_mode = proposal_mode if proposal_mode in {"fast", "deep"} else "fast"
         logger.info(
@@ -339,7 +343,7 @@ class GitHubCTOWorkflow:
 
         planned_files = selected_files
         if proposal_mode == "fast" and selected_files:
-            planning_context = self._proposal_context_files(selected_files, base_branch)
+            planning_context = self._proposal_context_files(selected_files, read_branch)
             edit_plan = self.planner.plan_edits(issue, planning_context)
             planned_files = [path for path in edit_plan.get("files", []) if path in selected_files]
             if not planned_files:
@@ -352,7 +356,7 @@ class GitHubCTOWorkflow:
                 edit_plan.get("rationale", ""),
             )
 
-        fetched = self._proposal_context_files(planned_files, base_branch)
+        fetched = self._proposal_context_files(planned_files, read_branch)
         logger.info(
             "Patch context issue=%s mode=%s context_files=%s modes=%s",
             issue_number,
@@ -379,7 +383,7 @@ class GitHubCTOWorkflow:
             original = fetched_by_path.get(path)
             if original is None:
                 try:
-                    original = self.github.get_file(path, ref=base_branch)
+                    original = self.github.get_file(path, ref=read_branch)
                 except Exception:
                     original = None
 
@@ -423,7 +427,9 @@ class GitHubCTOWorkflow:
                 "summary": patch.get("summary", "No summary provided."),
                 "test_plan": patch.get("test_plan", "Review and run the repository test suite."),
             },
-            "base_branch": base_branch,
+            "base_branch": read_branch,
+            "read_branch": read_branch,
+            "target_branch": target_branch,
             "changes": changes,
             "codex": {
                 "agent": "Codex Engineering Manager",
@@ -432,7 +438,8 @@ class GitHubCTOWorkflow:
                 "timeline": codex_timeline(
                     "review",
                     proposed_files=len(changes),
-                    base_branch=base_branch,
+                    read_branch=read_branch,
+                    target_branch=target_branch,
                     proposal_mode=proposal_mode,
                     context_files=len(fetched),
                 ),
@@ -467,10 +474,10 @@ class GitHubCTOWorkflow:
         issue = proposal["issue"]
         triage = proposal["triage"]
         patch = proposal["patch"]
-        base_branch = proposal.get("base_branch") or self.github.default_branch()
+        target_branch = proposal.get("target_branch") or proposal.get("base_branch") or self.github.default_branch()
         branch = safe_branch_name(issue["number"], issue.get("title", "issue"))
 
-        self.github.create_branch(branch, from_branch=base_branch)
+        self.github.create_branch(branch, from_branch=target_branch)
 
         committed_paths = []
         for change in proposal.get("changes", []):
@@ -478,12 +485,17 @@ class GitHubCTOWorkflow:
             content = change.get("proposed_content")
             if not path or content is None:
                 continue
+            try:
+                target_file = self.github.get_file(path, ref=target_branch)
+                sha = target_file["sha"]
+            except Exception:
+                sha = None
             self.github.upsert_file(
                 path=path,
                 content=content,
                 branch=branch,
                 message=f"Fix issue #{issue['number']}: {issue.get('title')}",
-                sha=change.get("sha"),
+                sha=sha,
             )
             committed_paths.append(path)
 
@@ -495,7 +507,7 @@ class GitHubCTOWorkflow:
             branch=branch,
             title=f"Fix #{issue['number']}: {issue.get('title')}",
             body=pr_body,
-            base=base_branch,
+            base=target_branch,
         )
         self.github.comment_on_issue(
             issue["number"],

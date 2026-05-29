@@ -33,6 +33,30 @@ def create_app() -> Flask:
         repo = session.get("github_repo") or app.config["GITHUB_REPOSITORY"]
         return token, repo
 
+    def branch_settings(default_branch: str, branches: list[str] | None = None) -> dict[str, str]:
+        available = set(branches or [])
+        read_branch = (session.get("github_read_branch") or default_branch).strip()
+        target_branch = (session.get("github_target_branch") or default_branch).strip()
+        if available and read_branch not in available:
+            read_branch = default_branch
+        if available and target_branch not in available:
+            target_branch = default_branch
+        return {"read_branch": read_branch, "target_branch": target_branch, "default_branch": default_branch}
+
+    def posted_branch_settings(github: GitHubClient) -> dict[str, str]:
+        default_branch = github.default_branch()
+        branches = github.list_branches()
+        settings = branch_settings(default_branch, branches)
+        read_branch = request.form.get("read_branch", settings["read_branch"]).strip() or default_branch
+        target_branch = request.form.get("target_branch", settings["target_branch"]).strip() or default_branch
+        if read_branch not in branches:
+            raise ValueError(f"Unknown read branch: {read_branch}")
+        if target_branch not in branches:
+            raise ValueError(f"Unknown PR target branch: {target_branch}")
+        session["github_read_branch"] = read_branch
+        session["github_target_branch"] = target_branch
+        return {"read_branch": read_branch, "target_branch": target_branch, "default_branch": default_branch}
+
     def make_github() -> GitHubClient:
         token, repo = current_settings()
         return GitHubClient(token=token, repo=repo)
@@ -129,8 +153,26 @@ def create_app() -> Flask:
     def reset_connection():
         session.pop("github_token", None)
         session.pop("github_repo", None)
+        session.pop("github_read_branch", None)
+        session.pop("github_target_branch", None)
         flash("Browser override cleared. Using .env settings again.", "success")
         return redirect(url_for("dashboard"))
+
+    @app.route("/branch-settings", methods=["POST"])
+    def update_branch_settings():
+        next_url = request.form.get("next") or url_for("dashboard")
+        if not next_url.startswith("/"):
+            next_url = url_for("dashboard")
+        try:
+            github = make_github()
+            settings = posted_branch_settings(github)
+            flash(
+                f"Branch settings saved. Reading {settings['read_branch']} and opening PRs into {settings['target_branch']}.",
+                "success",
+            )
+        except Exception as exc:
+            flash(str(exc), "error")
+        return redirect(next_url)
 
     @app.route("/dashboard")
     def dashboard():
@@ -138,11 +180,13 @@ def create_app() -> Flask:
             github = make_github()
             repo = github.repository()
             user = github.current_user()
+            branches = github.list_branches()
+            settings = branch_settings(repo["default_branch"], branches)
             app.logger.info("Loading dashboard for repo=%s user=%s", github.repo.full_name, user.get("login"))
             issues = github.list_issues(limit=30)
             repo_index = make_repo_index()
-            index_stats = repo_index.stats(github.repo.full_name, repo["default_branch"])
-            indexed_files = repo_index.indexed_files(github.repo.full_name, repo["default_branch"])
+            index_stats = repo_index.stats(github.repo.full_name, settings["read_branch"])
+            indexed_files = repo_index.indexed_files(github.repo.full_name, settings["read_branch"])
             triaged = []
             for issue in issues:
                 triaged.append({"issue": issue, "triage": triage_issue(issue)})
@@ -154,6 +198,8 @@ def create_app() -> Flask:
                 index_stats=index_stats,
                 indexed_files=indexed_files,
                 index_job=index_jobs.snapshot(),
+                branches=branches,
+                branch_settings=settings,
             )
         except (ValueError, GitHubError) as exc:
             flash(str(exc), "error")
@@ -192,13 +238,14 @@ def create_app() -> Flask:
             token, repo_name = current_settings()
             github = make_github()
             repo = github.repository()
-            branch = repo["default_branch"]
+            branches = github.list_branches()
+            branch = branch_settings(repo["default_branch"], branches)["read_branch"]
             index_jobs.start(github.repo.full_name, branch)
             app.logger.info("Queued index rebuild for %s on %s", github.repo.full_name, branch)
 
             worker = threading.Thread(
                 target=_run_index_rebuild,
-                args=(app, index_jobs, token, repo_name),
+                args=(app, index_jobs, token, repo_name, branch),
                 daemon=True,
             )
             worker.start()
@@ -218,7 +265,8 @@ def create_app() -> Flask:
         try:
             github = make_github()
             repo = github.repository()
-            branch = repo["default_branch"]
+            branches = github.list_branches()
+            branch = branch_settings(repo["default_branch"], branches)["read_branch"]
             deleted = make_repo_index().delete_index(github.repo.full_name, branch)
             app.logger.info("Deleted repository index repo=%s branch=%s rows=%s", github.repo.full_name, branch, deleted)
             flash(f"Deleted repository index for {github.repo.full_name} on {branch}. Removed {deleted} chunk(s).", "success")
@@ -236,9 +284,11 @@ def create_app() -> Flask:
         try:
             github = make_github()
             repo = github.repository()
+            branches = github.list_branches()
+            branch = branch_settings(repo["default_branch"], branches)["read_branch"]
             repo_index = make_repo_index()
-            stats = repo_index.stats(github.repo.full_name, repo["default_branch"])
-            files = repo_index.indexed_files(github.repo.full_name, repo["default_branch"])
+            stats = repo_index.stats(github.repo.full_name, branch)
+            files = repo_index.indexed_files(github.repo.full_name, branch)
             return jsonify({"stats": stats.__dict__, "files": files})
         except Exception as exc:
             app.logger.exception("Failed to load indexed files")
@@ -249,9 +299,12 @@ def create_app() -> Flask:
         try:
             app.logger.info("Loading issue detail issue=%s", issue_number)
             workflow = make_workflow()
+            repo = workflow.github.repository()
+            branches = workflow.github.list_branches()
+            settings = branch_settings(repo["default_branch"], branches)
             context = workflow.issue_context(issue_number)
-            plan = workflow.plan_files(issue_number)
-            return render_template("issue.html", **context, plan=plan)
+            plan = workflow.plan_files(issue_number, branch=settings["read_branch"])
+            return render_template("issue.html", **context, plan=plan, branches=branches, branch_settings=settings)
         except Exception as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
@@ -268,7 +321,14 @@ def create_app() -> Flask:
                 len(selected_files),
             )
             workflow = make_workflow()
-            proposal = workflow.generate_proposal(issue_number, selected_files or None, proposal_mode=proposal_mode)
+            settings = posted_branch_settings(workflow.github)
+            proposal = workflow.generate_proposal(
+                issue_number,
+                selected_files or None,
+                proposal_mode=proposal_mode,
+                read_branch=settings["read_branch"],
+                target_branch=settings["target_branch"],
+            )
             proposal_id = proposal_store().save(proposal)
             app.logger.info("Proposal generated issue=%s proposal_id=%s changes=%s", issue_number, proposal_id, len(proposal.get("changes", [])))
             flash("Codex proposal generated. Review the diffs before creating the PR.", "success")
@@ -291,11 +351,30 @@ def create_app() -> Flask:
         selected_files = request.form.getlist("files")
         try:
             token, repo_name = current_settings()
+            github = make_github()
+            settings = posted_branch_settings(github)
             job = aider_jobs.create(issue_number)
-            app.logger.info("Queued Aider run job=%s issue=%s selected_files=%s", job.id, issue_number, len(selected_files))
+            app.logger.info(
+                "Queued Aider run job=%s issue=%s selected_files=%s read_branch=%s target_branch=%s",
+                job.id,
+                issue_number,
+                len(selected_files),
+                settings["read_branch"],
+                settings["target_branch"],
+            )
             worker = threading.Thread(
                 target=_run_aider_job,
-                args=(app, aider_jobs, job.id, token, repo_name, issue_number, selected_files),
+                args=(
+                    app,
+                    aider_jobs,
+                    job.id,
+                    token,
+                    repo_name,
+                    issue_number,
+                    selected_files,
+                    settings["read_branch"],
+                    settings["target_branch"],
+                ),
                 daemon=True,
             )
             worker.start()
@@ -331,7 +410,13 @@ def create_app() -> Flask:
                 len(selected_files),
             )
             agent = make_agent_loop()
-            proposal = agent.run(issue_number, selected_files or None)
+            settings = posted_branch_settings(agent.workflow.github)
+            proposal = agent.run(
+                issue_number,
+                selected_files or None,
+                read_branch=settings["read_branch"],
+                target_branch=settings["target_branch"],
+            )
             proposal_id = proposal_store().save(proposal)
             app.logger.info(
                 "Iterative agent run completed issue=%s proposal_id=%s changes=%s steps=%s",
@@ -360,7 +445,21 @@ def create_app() -> Flask:
         try:
             proposal = attach_diffs(proposal_store().load(proposal_id))
             app.logger.info("Reviewing proposal proposal_id=%s changes=%s", proposal_id, len(proposal.get("changes", [])))
-            return render_template("proposal.html", proposal=proposal)
+            proposal_target = proposal.get("target_branch") or proposal.get("base_branch") or ""
+            try:
+                github = make_github()
+                repo = github.repository()
+                branches = github.list_branches()
+                settings = branch_settings(repo["default_branch"], branches)
+                proposal_target = proposal_target or settings["target_branch"]
+            except Exception as branch_exc:
+                app.logger.warning("Could not load branches for proposal review: %s", branch_exc)
+                fallback_branch = proposal_target or proposal.get("read_branch") or proposal.get("base_branch") or "main"
+                branches = [fallback_branch]
+                settings = {"read_branch": proposal.get("read_branch") or fallback_branch, "target_branch": fallback_branch, "default_branch": fallback_branch}
+            if proposal_target not in branches:
+                proposal_target = settings["target_branch"]
+            return render_template("proposal.html", proposal=proposal, branches=branches, branch_settings=settings, proposal_target_branch=proposal_target)
         except Exception as exc:
             app.logger.exception("Proposal review failed proposal_id=%s", proposal_id)
             flash(str(exc), "error")
@@ -403,6 +502,13 @@ def create_app() -> Flask:
                     change["proposed_content"] = edited_content
             proposal["patch"]["summary"] = request.form.get("summary", proposal["patch"].get("summary", ""))
             proposal["patch"]["test_plan"] = request.form.get("test_plan", proposal["patch"].get("test_plan", ""))
+            target_branch = request.form.get("target_branch", proposal.get("target_branch", "")).strip()
+            if target_branch:
+                branches = make_github().list_branches()
+                if target_branch not in branches:
+                    raise ValueError(f"Unknown PR target branch: {target_branch}")
+                proposal["target_branch"] = target_branch
+                session["github_target_branch"] = target_branch
             store.update(proposal)
 
             workflow = make_workflow()
@@ -470,6 +576,8 @@ def _run_aider_job(
     repo_name: str,
     issue_number: int,
     selected_files: list[str],
+    read_branch: str,
+    target_branch: str,
 ) -> None:
     with app.app_context():
         def progress(message: str) -> None:
@@ -506,10 +614,9 @@ def _run_aider_job(
             issue = context["issue"]
             comments = context["comments"]
             triage = context["triage"]
-            repo = workflow.github.repository()
             if not selected_files:
                 progress("No files selected; asking planner for file context.")
-                selected_files = workflow.plan_files(issue_number)["files"]
+                selected_files = workflow.plan_files(issue_number, branch=read_branch)["files"]
             backend = AiderBackend(
                 repo_root=app.root_path + "/..",
                 workspace_root=app.instance_path + "/aider_runs",
@@ -528,10 +635,10 @@ def _run_aider_job(
                 openai_api_key=app.config["OPENAI_API_KEY"],
                 github_token=token,
                 repository=repo_name,
-                branch=repo["default_branch"],
+                branch=read_branch,
                 progress=progress,
             )
-            proposal = _proposal_from_aider_result(workflow, issue, triage, result)
+            proposal = _proposal_from_aider_result(workflow, issue, triage, result, read_branch, target_branch)
             progress("Validating generated changes.")
             validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
             if validation_warnings:
@@ -562,13 +669,16 @@ def _proposal_from_aider_result(
     issue: dict,
     triage,
     result: dict,
+    read_branch: str | None = None,
+    target_branch: str | None = None,
 ) -> dict:
-    base_branch = workflow.github.default_branch()
+    read_branch = read_branch or workflow.github.default_branch()
+    target_branch = target_branch or read_branch
     changes = []
     for change in result.get("changes", []):
         path = change["path"]
         try:
-            original = workflow.github.get_file(path, ref=base_branch)
+            original = workflow.github.get_file(path, ref=read_branch)
             original_content = original["content"]
             sha = original["sha"]
             status = "modified"
@@ -602,7 +712,9 @@ def _proposal_from_aider_result(
             "aider_run_id": result.get("run_id", ""),
             "aider_workspace": result.get("workspace", ""),
         },
-        "base_branch": base_branch,
+        "base_branch": read_branch,
+        "read_branch": read_branch,
+        "target_branch": target_branch,
         "changes": changes,
         "codex": {
             "agent": "Aider CLI Backend",
@@ -622,7 +734,7 @@ def codex_timeline_for_aider(changed_files: int, run_id: str) -> list[dict[str, 
     ]
 
 
-def _run_index_rebuild(app: Flask, index_jobs: IndexJobRegistry, token: str, repo_name: str) -> None:
+def _run_index_rebuild(app: Flask, index_jobs: IndexJobRegistry, token: str, repo_name: str, branch: str) -> None:
     with app.app_context():
         try:
             github = GitHubClient(token=token, repo=repo_name)
@@ -638,6 +750,7 @@ def _run_index_rebuild(app: Flask, index_jobs: IndexJobRegistry, token: str, rep
                 github,
                 max_files=app.config["MAX_REPO_FILES"],
                 max_file_bytes=app.config["MAX_FILE_BYTES"],
+                branch=branch,
                 progress=progress,
             )
             index_jobs.finish(f"Index complete: {stats.files} files and {stats.chunks} chunks.")
