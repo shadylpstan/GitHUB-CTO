@@ -38,6 +38,12 @@
           <span>{{ plan.intent.rationale }}</span>
         </div>
       {% endif %}
+      {% if plan.scope %}
+        <div class="context-note">
+          <strong>Scope: {{ plan.scope.kind }}</strong>
+          <span>{{ plan.scope.rationale }}</span>
+        </div>
+      {% endif %}
       {% if plan.root_cause_justification %}
         <div class="context-note">
           <strong>Root-cause justification</strong>
@@ -68,13 +74,13 @@
       <form method="post" action="{{ url_for('generate_proposal', issue_number=issue.number) }}" class="file-plan" data-loading="Codex is generating a proposal...">
         {% for file in plan.files %}
           <label class="file-choice">
-            <input type="checkbox" name="files" value="{{ file }}" checked>
+            <input type="checkbox" name="files" value="{{ file }}" {% if file in plan.checked_files %}checked{% endif %}>
             <span>{{ file }}</span>
           </label>
         {% else %}
           <div class="empty">No candidate files were selected. Codex can still propose new files or ask for broader context.</div>
         {% endfor %}
-        <small class="form-hint">Tip: if Codex times out, uncheck less relevant files and retry.</small>
+        <small class="form-hint">Top files are checked by default. Extra candidates are shown unchecked so you can include them when needed.</small>
         <div class="proposal-actions">
           <button class="primary danger-zone" type="submit" name="proposal_mode" value="fast" {% if not has_openai_key %}disabled{% endif %}>
             <span class="button-label">Fast Proposal</span>

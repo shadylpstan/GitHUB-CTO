@@ -123,9 +123,27 @@ def _domain_terms(terms: list[str]) -> list[str]:
 def _issue_roles(issue_text: str) -> set[str]:
     text = issue_text.lower()
     roles: set[str] = set()
-    if any(term in text for term in ["button", "option", "ui", "screen", "page", "show", "dashboard", "application"]):
+    if any(
+        term in text
+        for term in [
+            "button",
+            "option",
+            "ui",
+            "screen",
+            "page",
+            "show",
+            "dashboard",
+            "application",
+            "dropdown",
+            "drop down",
+            "select",
+            "selector",
+            "control",
+            "form",
+        ]
+    ):
         roles.add("ui_surface")
-    if any(term in text for term in ["route", "endpoint", "post", "request"]):
+    if any(term in text for term in ["route", "endpoint", "post", "request", "submit", "branch", "pr target"]):
         roles.add("route_surface")
     if any(term in text for term in ["delete", "remove", "clear", "store", "save", "database", "index"]):
         roles.add("data_operation")
@@ -139,7 +157,10 @@ def _file_roles(path: str, normalized_content: str) -> set[str]:
 
     if is_template:
         roles.add("ui_surface")
-    if is_template and any(term in normalized_content for term in ["<form", "<button", "type=\"submit\"", "type='submit'", "url_for("]):
+    if is_template and any(
+        term in normalized_content
+        for term in ["<form", "<button", "<select", "<option", "type=\"submit\"", "type='submit'", "url_for("]
+    ):
         roles.add("ui_control_owner")
     if any(term in normalized_content for term in ["@app.route", "blueprint", "methods=[", "def post", "def get"]):
         roles.add("route_owner")

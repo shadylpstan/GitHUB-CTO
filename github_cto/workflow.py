@@ -7,13 +7,46 @@ from typing import Any
 from .ai import CodexEngineeringManager
 from .evidence import evidence_rank
 from .github_client import GitHubClient, is_probably_text_file
-from .intent import architectural_rank, classify_issue_intent
+from .intent import architectural_rank, classify_issue_intent, classify_issue_scope, file_scope
 from .patch_utils import PatchApplyError, apply_unified_diff
 from .repo_index import RepositoryIndex
 from .triage import triage_issue
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_template_or_ui(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    return (
+        "/templates/" in normalized
+        or normalized.startswith("templates/")
+        or normalized.endswith((".html", ".jinja", ".j2", ".jsx", ".tsx", ".css"))
+    )
+
+
+def _ui_candidate_score(path: str) -> int:
+    normalized = path.replace("\\", "/").lower()
+    score = 0
+    if normalized.endswith("dashboard.html"):
+        score += 45
+    if normalized.endswith("issue.html"):
+        score += 52
+    if normalized.endswith("base.html"):
+        score += 18
+    if "/templates/" in normalized or normalized.startswith("templates/"):
+        score += 30
+    if normalized.endswith((".jsx", ".tsx")):
+        score += 24
+    return score
+
+
+def _priority_score(path: str, priorities: list[str]) -> int:
+    normalized = path.replace("\\", "/").lower()
+    for index, candidate in enumerate(priorities):
+        if normalized == candidate.lower():
+            return 100 - index
+    return 0
 
 
 def safe_branch_name(issue_number: int, title: str) -> str:
@@ -113,24 +146,30 @@ class GitHubCTOWorkflow:
     def plan_files(self, issue_number: int) -> dict[str, Any]:
         issue = self.github.get_issue(issue_number)
         intent = classify_issue_intent(issue)
+        scope = classify_issue_scope(issue)
         indexed_files = self._indexed_candidate_files(issue)
         base_files = indexed_files or self.candidate_files()
         evidence_hits = self._evidence_hits(issue, base_files)
         evidence_scores = {hit.path: hit.score for hit in evidence_hits}
         files = architectural_rank(base_files, intent, evidence_scores=evidence_scores)
+        files = self._balance_scope_candidates(files, scope)
         context_source = "vector_index" if indexed_files else "repo_tree"
         if not self.planner.enabled:
+            visible_files = files[: self.max_selected_files]
             return {
-                "files": files[: self.default_selected_files],
+                "files": visible_files,
+                "checked_files": visible_files[: self.default_selected_files],
                 "reasoning": "Codex planning is disabled because OPENAI_API_KEY is not configured. Showing top repository files only.",
                 "root_cause_justification": "",
                 "intent": intent,
+                "scope": scope,
                 "evidence": evidence_hits[:8],
                 "ai_enabled": False,
                 "timeline": codex_timeline(
                     "context",
                     context_source=context_source,
                     intent=intent.kind,
+                    scope=scope.kind,
                     evidence_hits=len(evidence_hits),
                 ),
             }
@@ -142,11 +181,15 @@ class GitHubCTOWorkflow:
             evidence=[hit.__dict__ for hit in evidence_hits],
         )
         selected = [path for path in plan.get("files", []) if path in files]
+        selected = self._balance_scope_candidates(selected, scope, fallback=files)
+        visible_files = selected[: self.max_selected_files]
         return {
-            "files": selected[: self.default_selected_files],
+            "files": visible_files,
+            "checked_files": visible_files[: self.default_selected_files],
             "reasoning": plan.get("reasoning", ""),
             "root_cause_justification": plan.get("root_cause_justification", ""),
             "intent": intent,
+            "scope": scope,
             "evidence": evidence_hits[:8],
             "ai_enabled": True,
             "timeline": codex_timeline(
@@ -154,6 +197,7 @@ class GitHubCTOWorkflow:
                 selected_files=len(selected[: self.default_selected_files]),
                 context_source=context_source,
                 intent=intent.kind,
+                scope=scope.kind,
                 evidence_hits=len(evidence_hits),
             ),
         }
@@ -193,6 +237,79 @@ class GitHubCTOWorkflow:
             return cache[path]
 
         return evidence_rank(files, issue_text, fetch_content=fetch)
+
+    def _ensure_ui_candidates(self, issue: dict[str, Any], selected: list[str], candidates: list[str]) -> list[str]:
+        issue_text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}".lower()
+        ui_terms = [
+            "dropdown",
+            "drop down",
+            "select",
+            "selector",
+            "control",
+            "button",
+            "form",
+            "page",
+            "screen",
+            "dashboard",
+            "ui",
+        ]
+        if not any(term in issue_text for term in ui_terms):
+            return selected
+
+        selected_set = set(selected)
+        ui_candidates = [
+            path
+            for path in candidates
+            if _is_template_or_ui(path) and path not in selected_set
+        ]
+        prioritized = sorted(ui_candidates, key=_ui_candidate_score, reverse=True)
+        merged = list(selected)
+        for path in prioritized[:2]:
+            merged.append(path)
+        return merged
+
+    def _balance_scope_candidates(self, selected: list[str], scope: Any, fallback: list[str] | None = None) -> list[str]:
+        fallback = fallback or selected
+        required: list[str] = []
+        if scope.ui_needed:
+            required.append("frontend")
+        if scope.backend_needed:
+            required.append("backend")
+        if scope.data_needed:
+            required.append("data")
+        if scope.tests_needed:
+            required.append("test")
+        if scope.config_needed:
+            required.append("config")
+
+        if not required:
+            return selected
+
+        merged = list(selected)
+        existing_scopes = {file_scope(path) for path in merged}
+        for needed_scope in required:
+            if needed_scope in existing_scopes:
+                continue
+            candidate = self._best_scope_candidate(fallback, needed_scope, exclude=set(merged))
+            if candidate:
+                insert_at = min(len(merged), 2)
+                merged.insert(insert_at, candidate)
+                existing_scopes.add(needed_scope)
+        return merged
+
+    def _best_scope_candidate(self, paths: list[str], needed_scope: str, exclude: set[str]) -> str | None:
+        scoped = [path for path in paths if path not in exclude and file_scope(path) == needed_scope]
+        if not scoped:
+            return None
+        if needed_scope == "frontend":
+            return sorted(scoped, key=_ui_candidate_score, reverse=True)[0]
+        priority_names = {
+            "backend": ["github_cto/app.py", "github_cto/workflow.py", "github_cto/aider_backend.py", "github_cto/github_client.py"],
+            "data": ["github_cto/repo_index.py", "github_cto/index_jobs.py"],
+            "config": ["requirements.txt", ".env.example", "README.md"],
+        }
+        priorities = priority_names.get(needed_scope, [])
+        return sorted(scoped, key=lambda path: _priority_score(path, priorities), reverse=True)[0]
 
     def generate_proposal(
         self,
