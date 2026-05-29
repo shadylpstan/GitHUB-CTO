@@ -187,11 +187,17 @@ class RepositoryIndex:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT COUNT(DISTINCT path) AS files, COUNT(*) AS chunks, MAX(updated_at) AS updated_at
-                FROM chunks
-                WHERE repo = ? AND branch = ?
+                SELECT
+                    (SELECT COUNT(DISTINCT path) FROM file_metadata WHERE repo = ? AND branch = ?) AS files,
+                    (SELECT COUNT(*) FROM chunks WHERE repo = ? AND branch = ?) AS chunks,
+                    MAX(updated_at) AS updated_at
+                FROM (
+                    SELECT updated_at FROM chunks WHERE repo = ? AND branch = ?
+                    UNION ALL
+                    SELECT updated_at FROM file_metadata WHERE repo = ? AND branch = ?
+                )
                 """,
-                (repo, branch),
+                (repo, branch, repo, branch, repo, branch, repo, branch),
             ).fetchone()
         return IndexStats(
             repo=repo,
@@ -206,16 +212,20 @@ class RepositoryIndex:
             rows = connection.execute(
                 """
                 SELECT
-                    path,
-                    language,
-                    COUNT(*) AS chunks,
-                    MIN(start_line) AS start_line,
-                    MAX(end_line) AS end_line,
-                    MAX(updated_at) AS updated_at
-                FROM chunks
-                WHERE repo = ? AND branch = ?
-                GROUP BY path, language
-                ORDER BY path
+                    metadata.path,
+                    metadata.language,
+                    COUNT(chunks.id) AS chunks,
+                    MIN(chunks.start_line) AS start_line,
+                    MAX(chunks.end_line) AS end_line,
+                    MAX(COALESCE(chunks.updated_at, metadata.updated_at)) AS updated_at
+                FROM file_metadata metadata
+                LEFT JOIN chunks
+                    ON chunks.repo = metadata.repo
+                    AND chunks.branch = metadata.branch
+                    AND chunks.path = metadata.path
+                WHERE metadata.repo = ? AND metadata.branch = ?
+                GROUP BY metadata.path, metadata.language
+                ORDER BY metadata.path
                 """,
                 (repo, branch),
             ).fetchall()
@@ -294,17 +304,24 @@ class RepositoryIndex:
                 self._progress(progress, files_skipped=index - len({record["path"] for record in records}))
                 continue
             content = file_payload["content"]
-            if len(content.encode("utf-8")) > max_file_bytes:
-                logger.info("Skipping oversized file during index: %s", path)
-                self._progress(progress, files_skipped=index - len({record["path"] for record in records}))
-                continue
             language = _language_for_path(path)
             metadata = self._file_metadata(repo, branch, path, file_payload["sha"], language, content)
             metadata_records.append(metadata)
+            if len(content.encode("utf-8")) > max_file_bytes:
+                logger.info("Indexing metadata only for oversized file: %s", path)
+                metadata_files = len({record["path"] for record in metadata_records})
+                self._progress(
+                    progress,
+                    files_indexed=metadata_files,
+                    files_skipped=index - metadata_files,
+                    chunks_created=len(records),
+                    message=f"Captured metadata for oversized file {path}.",
+                )
+                continue
             metadata_text = _metadata_search_text(metadata)
             file_chunks = self._chunk_file(path, file_payload["sha"], content, metadata_text=metadata_text)
             records.extend(file_chunks)
-            indexed_files = len({record["path"] for record in records})
+            indexed_files = len({record["path"] for record in metadata_records})
             self._progress(
                 progress,
                 files_indexed=indexed_files,
@@ -413,9 +430,45 @@ class RepositoryIndex:
         chunks = self.search(repo, branch, query, limit=max(limit * 2, 12))
         best_by_path: dict[str, float] = defaultdict(float)
         for chunk in chunks:
-            best_by_path[chunk["path"]] = max(best_by_path[chunk["path"]], chunk["score"])
+            best_by_path[chunk["path"]] = max(best_by_path[chunk["path"]], chunk["score"] * 0.65)
+        for item in self.metadata_search(repo, branch, query):
+            best_by_path[item["path"]] = best_by_path[item["path"]] + item["score"]
         ranked = sorted(best_by_path.items(), key=lambda item: item[1], reverse=True)
         return [path for path, _ in ranked[:limit]]
+
+    def metadata_search(self, repo: str, branch: str, query: str) -> list[dict[str, Any]]:
+        terms = _query_terms(query)
+        if not terms:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT path, language, facts, summary, keywords
+                FROM file_metadata
+                WHERE repo = ? AND branch = ?
+                """,
+                (repo, branch),
+            ).fetchall()
+        scored = []
+        for row in rows:
+            text = _metadata_search_text(dict(row)).lower()
+            score = 0.0
+            exact_hits = [term for term in terms if term in text]
+            if exact_hits:
+                score += len(exact_hits) * 0.18
+            for phrase in _query_phrases(query):
+                if phrase in text:
+                    score += 0.24
+            if "route" in terms and "flask routes:" in text:
+                score += 0.35
+            if "page" in terms and ("renders templates:" in text or "jinja blocks:" in text):
+                score += 0.22
+            if "job" in terms and ("job" in text or "aider" in text):
+                score += 0.20
+            if score > 0:
+                scored.append({"path": row["path"], "score": score, "reason": f"metadata matched {len(exact_hits)} issue term(s)"})
+        scored.sort(key=lambda item: item["score"], reverse=True)
+        return scored
 
     def chunks_for_paths(self, repo: str, branch: str, paths: list[str], max_chunks_per_file: int = 2) -> list[dict[str, Any]]:
         if not paths:
@@ -695,6 +748,41 @@ def _metadata_search_text(metadata: dict[str, Any]) -> str:
         f"keywords: {', '.join(str(item) for item in keywords[:12])}\n"
         f"facts:\n{metadata.get('facts') or ''}"
     ).strip()
+
+
+def _query_terms(query: str) -> list[str]:
+    stop = {
+        "about",
+        "after",
+        "before",
+        "branch",
+        "change",
+        "display",
+        "enhance",
+        "issue",
+        "should",
+        "show",
+        "that",
+        "this",
+        "when",
+        "which",
+        "with",
+    }
+    terms = []
+    for term in re.findall(r"[a-zA-Z_][a-zA-Z0-9_/-]{2,}", query.lower()):
+        cleaned = term.strip("-_/")
+        if cleaned and cleaned not in stop and cleaned not in terms:
+            terms.append(cleaned)
+    return terms[:32]
+
+
+def _query_phrases(query: str) -> list[str]:
+    words = _query_terms(query)
+    phrases = []
+    for size in (3, 2):
+        for index in range(0, max(0, len(words) - size + 1)):
+            phrases.append(" ".join(words[index : index + size]))
+    return phrases[:24]
 
 
 def _unique(items: list[str]) -> list[str]:

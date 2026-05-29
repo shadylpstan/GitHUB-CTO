@@ -235,10 +235,10 @@ class GitHubCTOWorkflow:
             try:
                 payload = self.github.get_file(path, ref=branch)
                 content = payload["content"]
+                metadata = metadata_by_path.get(path, "")
                 if len(content.encode("utf-8")) > self.max_file_bytes:
-                    cache[path] = None
+                    cache[path] = metadata or None
                 else:
-                    metadata = metadata_by_path.get(path, "")
                     cache[path] = f"{metadata}\n\n{content}" if metadata else content
             except Exception:
                 cache[path] = None
