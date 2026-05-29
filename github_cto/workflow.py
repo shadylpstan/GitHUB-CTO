@@ -28,6 +28,8 @@ def _is_template_or_ui(path: str) -> bool:
 def _ui_candidate_score(path: str) -> int:
     normalized = path.replace("\\", "/").lower()
     score = 0
+    if normalized.endswith("static/styles.css") or normalized.endswith("styles.css"):
+        score += 48
     if normalized.endswith("dashboard.html"):
         score += 45
     if normalized.endswith("issue.html"):
@@ -154,6 +156,7 @@ class GitHubCTOWorkflow:
         evidence_scores = {hit.path: hit.score for hit in evidence_hits}
         files = architectural_rank(base_files, intent, evidence_scores=evidence_scores)
         files = self._balance_scope_candidates(files, scope)
+        files = self._ensure_ui_candidates(issue, files, base_files)
         context_source = "vector_index" if indexed_files else "repo_tree"
         if not self.planner.enabled:
             visible_files = files[: self.max_selected_files]
@@ -184,6 +187,7 @@ class GitHubCTOWorkflow:
         )
         selected = [path for path in plan.get("files", []) if path in files]
         selected = self._balance_scope_candidates(selected, scope, fallback=files)
+        selected = self._ensure_ui_candidates(issue, selected, files)
         visible_files = selected[: self.max_selected_files]
         return {
             "files": visible_files,
@@ -260,6 +264,17 @@ class GitHubCTOWorkflow:
             "screen",
             "dashboard",
             "ui",
+            "display",
+            "hide",
+            "show",
+            "collapse",
+            "collapsible",
+            "collapsed",
+            "styling",
+            "style",
+            "layout",
+            "output",
+            "unpleasant",
         ]
         if not any(term in issue_text for term in ui_terms):
             return selected
@@ -273,7 +288,8 @@ class GitHubCTOWorkflow:
         prioritized = sorted(ui_candidates, key=_ui_candidate_score, reverse=True)
         merged = list(selected)
         for path in prioritized[:2]:
-            merged.append(path)
+            insert_at = min(len(merged), max(0, self.max_selected_files - 1))
+            merged.insert(insert_at, path)
         return merged
 
     def _balance_scope_candidates(self, selected: list[str], scope: Any, fallback: list[str] | None = None) -> list[str]:
