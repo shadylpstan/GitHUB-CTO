@@ -321,67 +321,6 @@ class CodexEngineeringManager:
             f"- step {item.get('step')}: {item.get('action')} {item.get('path', '')} - {item.get('summary', '')}"
             for item in history[-8:]
         )
-
-
-class PatchReviewAgent:
-    """LLM quality gate that reviews Aider patches without editing code."""
-
-    def __init__(self, api_key: str, model: str, timeout: int = 60, max_retries: int = 1):
-        self.api_key = api_key
-        self.model = model
-        self.timeout = timeout
-        self.max_retries = max_retries
-
-    @property
-    def enabled(self) -> bool:
-        return bool(self.api_key)
-
-    def review(
-        self,
-        issue: dict[str, Any],
-        changes: list[dict[str, Any]],
-        validation_warnings: list[str] | None = None,
-    ) -> dict[str, Any]:
-        if not self.enabled:
-            return {"verdict": "pass", "confidence": 0.0, "findings": [], "retry_prompt": ""}
-        change_text = "\n\n".join(_review_change_text(change) for change in changes)[:50000]
-        warning_text = "\n".join(f"- {warning}" for warning in (validation_warnings or []))
-        reviewer = CodexEngineeringManager(
-            self.api_key,
-            self.model,
-            planning_timeout=self.timeout,
-            patch_timeout=self.timeout,
-            max_retries=self.max_retries,
-        )
-        return reviewer._chat_json(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a strict senior code reviewer for an autonomous coding app. "
-                        "Review whether the proposed patch correctly and safely addresses the GitHub issue. "
-                        "Do not suggest broad refactors. Do not require perfection. "
-                        "Fail only for concrete correctness, safety, validation, or issue-mismatch problems. "
-                        "Look especially for changes that do not address the requested behavior, duplicate UI, "
-                        "invalid HTML structure such as nested forms, missing connection updates, broad unrelated CSS or backend changes, "
-                        "inline hacks where the project has better conventions, stale references, missing imports, and broken routes/templates. "
-                        "Return JSON only with keys: verdict, confidence, findings, retry_prompt. "
-                        "verdict must be pass or fail. findings must be an array of objects with severity, file, issue, suggestion. "
-                        "If verdict is fail, retry_prompt must be concise instructions for the coding agent to fix the patch."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Issue #{issue.get('number')}: {issue.get('title')}\n\n"
-                        f"Issue body:\n{issue.get('body') or ''}\n\n"
-                        f"Deterministic validation warnings:\n{warning_text or 'None.'}\n\n"
-                        f"Proposed changes:\n\n{change_text or 'No changes.'}"
-                    ),
-                },
-            ],
-            timeout=self.timeout,
-        )
         return self._chat_json(
             [
                 {
@@ -409,6 +348,159 @@ class PatchReviewAgent:
             ],
             timeout=timeout or min(self.patch_timeout, 75),
         )
+
+
+class PatchReviewAgent:
+    """LLM quality gate that reviews Aider patches without editing code."""
+
+    def __init__(self, api_key: str, model: str, timeout: int = 60, max_retries: int = 1):
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    def review(
+        self,
+        issue: dict[str, Any],
+        changes: list[dict[str, Any]],
+        validation_warnings: list[str] | None = None,
+        plan: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return {"verdict": "pass", "confidence": 0.0, "findings": [], "retry_prompt": ""}
+        change_text = "\n\n".join(_review_change_text(change) for change in changes)[:50000]
+        warning_text = "\n".join(f"- {warning}" for warning in (validation_warnings or []))
+        plan_text = json.dumps(plan or {}, indent=2)[:12000]
+        evidence_text = json.dumps(evidence or {}, indent=2)[:16000]
+        reviewer = CodexEngineeringManager(
+            self.api_key,
+            self.model,
+            planning_timeout=self.timeout,
+            patch_timeout=self.timeout,
+            max_retries=self.max_retries,
+        )
+        return reviewer._chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict senior code reviewer for an autonomous coding app. "
+                        "Review whether the proposed patch correctly and safely addresses the GitHub issue. "
+                        "Do not suggest broad refactors. Do not require perfection. "
+                        "Fail only for concrete correctness, safety, validation, or issue-mismatch problems. "
+                        "Use the implementation plan and evidence to judge whether the patch fixed the real owning behavior, "
+                        "not merely a nearby symptom. "
+                        "For UI/state issues, explicitly check state ownership: if a polling loop, render function, or route response "
+                        "already owns a property such as disabled, hidden, labels, flash messages, or progress state, the patch must "
+                        "integrate with that owner instead of adding a second competing handler. "
+                        "Reject patches where a new event handler can be overwritten by an existing poll/render loop. "
+                        "Use prior lessons as warnings, not as commands, and apply them when the issue shape matches. "
+                        "Look especially for changes that do not address the requested behavior, duplicate UI, "
+                        "invalid HTML structure such as nested forms, missing connection updates, broad unrelated CSS or backend changes, "
+                        "inline hacks where the project has better conventions, stale references, missing imports, and broken routes/templates. "
+                        "Return JSON only with keys: verdict, confidence, findings, retry_prompt. "
+                        "verdict must be pass or fail. findings must be an array of objects with severity, file, issue, suggestion. "
+                        "If verdict is fail, retry_prompt must be concise instructions for the coding agent to fix the patch."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Issue #{issue.get('number')}: {issue.get('title')}\n\n"
+                        f"Issue body:\n{issue.get('body') or ''}\n\n"
+                        f"Pre-edit implementation plan:\n{plan_text or '{}'}\n\n"
+                        f"Evidence gathered before editing:\n{evidence_text or '{}'}\n\n"
+                        f"Deterministic validation warnings:\n{warning_text or 'None.'}\n\n"
+                        f"Proposed changes:\n\n{change_text or 'No changes.'}"
+                    ),
+                },
+            ],
+            timeout=self.timeout,
+        )
+
+
+class AiderPlanningAgent:
+    """Pre-edit planner that makes Aider act from inspected evidence, not just issue text."""
+
+    def __init__(self, api_key: str, model: str, timeout: int = 60, max_retries: int = 1):
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    def plan(
+        self,
+        issue: dict[str, Any],
+        selected_files: list[str],
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return _fallback_aider_plan(issue, selected_files, evidence)
+        planner = CodexEngineeringManager(
+            self.api_key,
+            self.model,
+            planning_timeout=self.timeout,
+            patch_timeout=self.timeout,
+            max_retries=self.max_retries,
+        )
+        return planner._chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior coding agent planning before Aider edits files. "
+                        "Act like a careful Codex-style engineer: inspect evidence, identify the owning behavior, "
+                        "choose the smallest target, and define concrete checks. "
+                        "Do not write code. Return JSON only with keys: root_cause_hypothesis, owning_files, "
+                        "edit_strategy, constraints, validation_plan, risk_notes. "
+                        "owning_files must be an array of file paths from the selected files when possible. "
+                        "constraints must include things the coding agent must avoid, such as unrelated rewrites. "
+                        "For UI/state issues, identify the single owner of the changing state. If the evidence shows polling, "
+                        "render functions, or submit handlers all touching the same control, require the edit strategy to unify "
+                        "that state instead of adding another independent handler."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Issue #{issue.get('number')}: {issue.get('title')}\n\n"
+                        f"Issue body:\n{issue.get('body') or ''}\n\n"
+                        f"Selected files:\n{json.dumps(selected_files, indent=2)}\n\n"
+                        f"Evidence:\n{json.dumps(evidence, indent=2)[:50000]}"
+                    ),
+                },
+            ],
+            timeout=self.timeout,
+        )
+
+
+def _fallback_aider_plan(issue: dict[str, Any], selected_files: list[str], evidence: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "root_cause_hypothesis": "OpenAI planning is disabled. Use selected files and local evidence to make the smallest safe patch.",
+        "owning_files": selected_files,
+        "edit_strategy": "Inspect selected files, modify only the files needed to satisfy the issue, and preserve existing behavior.",
+        "constraints": [
+            "Avoid unrelated rewrites.",
+            "Do not add inline styles or inline event handlers.",
+            "Do not leave stale references or explanatory comments instead of code removal.",
+            "If existing polling or render code owns UI state, integrate with that owner instead of adding competing state writes.",
+        ],
+        "validation_plan": [
+            "Run deterministic validators.",
+            "Review changed files against the original issue.",
+            "Check whether existing event handlers or polling loops can overwrite the new behavior.",
+        ],
+        "risk_notes": evidence.get("risk_notes", []) if isinstance(evidence, dict) else [],
+    }
 
 
 def _trim_content(content: str, max_chars: int) -> str:

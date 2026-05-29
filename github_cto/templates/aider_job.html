@@ -7,6 +7,12 @@
       <p class="eyebrow">Aider job {{ job.id[:8] }}</p>
       <h1 id="job-heading">{{ "Aider finished" if job.state == "complete" else "Aider is working" }}</h1>
       <p class="lede" id="job-message">{{ job.message }}</p>
+      <div class="context-note">
+        <strong>Run Context</strong>
+        <span>Read branch: <b id="job-read-branch">{{ job.read_branch or "?" }}</b></span>
+        <span>PR target branch: <b id="job-target-branch">{{ job.target_branch or "?" }}</b></span>
+        <span>Selected files: <b id="job-selected-files">{{ job.selected_files_count }}</b></span>
+      </div>
       <p class="form-hint">Started: {{ job.started_at }}</p>
     </div>
     <div class="severity-card">
@@ -56,6 +62,9 @@
         document.getElementById("job-last-updated").textContent = `Last update: ${new Date().toLocaleTimeString()}`;
         logs.textContent = (payload.logs || []).length ? payload.logs.join("\n") : "Waiting for Aider logs...";
         logs.scrollTop = logs.scrollHeight;
+        document.getElementById("job-read-branch").textContent = payload.read_branch || "?";
+        document.getElementById("job-target-branch").textContent = payload.target_branch || "?";
+        document.getElementById("job-selected-files").textContent = payload.selected_files_count ?? "?";
         if (payload.error) {
           error.hidden = false;
           error.textContent = payload.error;

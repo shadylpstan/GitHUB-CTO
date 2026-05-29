@@ -105,6 +105,52 @@
     </section>
   {% endif %}
 
+  {% if proposal.patch.implementation_plan %}
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Pre-Edit Plan</h2>
+        <p>Generated before Aider edited files.</p>
+      </div>
+      <ul class="rationale-list">
+        <li><strong>Root cause:</strong> {{ proposal.patch.implementation_plan.root_cause_hypothesis }}</li>
+        <li><strong>Strategy:</strong> {{ proposal.patch.implementation_plan.edit_strategy }}</li>
+        {% if proposal.patch.implementation_plan.owning_files %}
+          <li><strong>Owning files:</strong> {{ proposal.patch.implementation_plan.owning_files|join(", ") }}</li>
+        {% endif %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if proposal.patch.pre_edit_evidence and proposal.patch.pre_edit_evidence.lessons %}
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Agent Memory</h2>
+        <p>Prior lessons used before this Aider run.</p>
+      </div>
+      <ul class="rationale-list">
+        {% for lesson in proposal.patch.pre_edit_evidence.lessons %}
+          <li>{{ lesson.lesson }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if proposal.patch.reviewer %}
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Reviewer Gate</h2>
+        <p>Semantic review against the issue and pre-edit evidence.</p>
+      </div>
+      <ul class="rationale-list">
+        <li><strong>Verdict:</strong> {{ proposal.patch.reviewer.verdict }}</li>
+        <li><strong>Confidence:</strong> {{ proposal.patch.reviewer.confidence }}</li>
+        {% for finding in proposal.patch.reviewer.findings or [] %}
+          <li>{{ finding.severity }} {{ finding.file }}: {{ finding.issue }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
   <form method="post" action="{{ url_for('create_pr_from_proposal', proposal_id=proposal.id) }}" class="review-form" id="review-proposal-form" data-loading="Creating reviewed PR...">
     <section class="panel">
       <div class="panel-title">

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 from .agent_loop import AgentLoopConfig, IterativeAgentLoop
 from .aider_backend import AiderBackend, AiderConfig, AiderRunError
 from .aider_jobs import AiderJobRegistry
-from .ai import CodexEngineeringManager, CodexTimeout, CodexTransientError, PatchReviewAgent
+from .aider_memory import AiderMemory
+from .ai import AiderPlanningAgent, CodexEngineeringManager, CodexTimeout, CodexTransientError, PatchReviewAgent
 from .config import Config
 from .github_client import GitHubClient, GitHubError
 from .index_jobs import IndexJobRegistry
@@ -362,7 +365,12 @@ def create_app() -> Flask:
             token, repo_name = current_settings()
             github = make_github()
             settings = posted_branch_settings(github)
-            job = aider_jobs.create(issue_number)
+            job = aider_jobs.create(
+                issue_number,
+                read_branch=settings["read_branch"],
+                target_branch=settings["target_branch"],
+                selected_files=selected_files,
+            )
             app.logger.info(
                 "Queued Aider run job=%s issue=%s selected_files=%s read_branch=%s target_branch=%s",
                 job.id,
@@ -635,6 +643,22 @@ def _run_aider_job(
             if not selected_files:
                 progress("No files selected; asking planner for file context.")
                 selected_files = workflow.plan_files(issue_number, branch=read_branch)["files"]
+            progress("Inspecting selected files, git state, and recent logs before editing.")
+            memory = AiderMemory(Path(app.instance_path) / "aider_memory.json")
+            aider_evidence = _collect_aider_evidence(app, workflow, issue, comments, selected_files, read_branch, memory)
+            if aider_evidence.get("lessons"):
+                progress(f"Loaded {len(aider_evidence['lessons'])} relevant prior lesson(s).")
+            planning_agent = AiderPlanningAgent(
+                app.config["OPENAI_API_KEY"],
+                app.config["OPENAI_MODEL"],
+                timeout=app.config["AIDER_PLANNING_TIMEOUT"],
+                max_retries=app.config["OPENAI_MAX_RETRIES"],
+            )
+            implementation_plan = planning_agent.plan(issue, selected_files, aider_evidence)
+            progress(f"Planner root-cause hypothesis: {implementation_plan.get('root_cause_hypothesis', 'No hypothesis provided.')}")
+            owning_files = implementation_plan.get("owning_files") or []
+            if owning_files:
+                progress("Planner owning files: " + ", ".join(str(path) for path in owning_files[:8]))
             backend = AiderBackend(
                 repo_root=app.root_path + "/..",
                 workspace_root=app.instance_path + "/aider_runs",
@@ -670,16 +694,21 @@ def _run_aider_job(
                     repository=repo_name,
                     branch=read_branch,
                     reviewer_feedback=reviewer_feedback,
+                    implementation_plan=implementation_plan,
+                    evidence=aider_evidence,
                     attempt=attempt,
                     progress=progress,
                 )
                 proposal = _proposal_from_aider_result(workflow, issue, triage, result, read_branch, target_branch)
+                proposal.setdefault("patch", {})["implementation_plan"] = implementation_plan
+                proposal.setdefault("patch", {})["pre_edit_evidence"] = aider_evidence
                 progress("Validating generated changes.")
                 try:
                     validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
                 except ProposalValidationError as exc:
                     last_failure = f"Deterministic validation failed:\n{exc}"
                     progress(last_failure)
+                    memory.remember(issue, selected_files, last_failure, source="validation")
                     reviewer_feedback = _retry_feedback_from_validation(last_failure)
                     if attempt >= max_attempts:
                         raise
@@ -690,13 +719,20 @@ def _run_aider_job(
                     progress(f"Validation completed with {len(validation_warnings)} warning(s).")
 
                 progress("Reviewing generated changes against the issue.")
-                review = reviewer.review(issue, proposal.get("changes", []), validation_warnings=validation_warnings)
+                review = reviewer.review(
+                    issue,
+                    proposal.get("changes", []),
+                    validation_warnings=validation_warnings,
+                    plan=implementation_plan,
+                    evidence=aider_evidence,
+                )
                 proposal.setdefault("patch", {})["reviewer"] = review
                 if (review.get("verdict") or "").lower() == "pass":
                     progress("Reviewer agent passed the generated changes.")
                     break
                 last_failure = _review_failure_text(review)
                 progress(last_failure)
+                memory.remember(issue, [change.get("path", "") for change in proposal.get("changes", [])], last_failure, source="reviewer")
                 reviewer_feedback = review.get("retry_prompt") or last_failure
                 if attempt >= max_attempts:
                     raise AiderRunError(last_failure)
@@ -786,6 +822,171 @@ def _proposal_from_aider_result(
     }
 
 
+def _collect_aider_evidence(
+    app: Flask,
+    workflow: GitHubCTOWorkflow,
+    issue: dict,
+    comments: list[dict],
+    selected_files: list[str],
+    read_branch: str,
+    memory: AiderMemory | None = None,
+) -> dict:
+    file_payloads = []
+    try:
+        file_payloads = workflow._proposal_context_files(selected_files, read_branch)
+    except Exception as exc:
+        app.logger.warning("Could not collect selected file evidence: %s", exc)
+
+    file_summaries = []
+    for payload in file_payloads:
+        content = payload.get("content", "")
+        file_summaries.append(
+            {
+                "path": payload.get("path", ""),
+                "chars": len(content),
+                "summary": payload.get("summary", ""),
+                "signals": _content_signals(payload.get("path", ""), content),
+                "state_ownership": _state_ownership_signals(payload.get("path", ""), content),
+            }
+        )
+
+    return {
+        "issue": {
+            "number": issue.get("number"),
+            "title": issue.get("title"),
+            "labels": [label.get("name") for label in issue.get("labels", [])],
+        },
+        "selected_files": selected_files,
+        "read_branch": read_branch,
+        "recent_comments": [
+            {
+                "user": comment.get("user", {}).get("login", "user"),
+                "body": (comment.get("body") or "")[:1200],
+            }
+            for comment in comments[-5:]
+        ],
+        "selected_file_summaries": file_summaries,
+        "git_state": _git_state_for_evidence(app),
+        "recent_app_logs": _recent_app_logs_for_evidence(app),
+        "risk_notes": _risk_notes_for_issue(issue, selected_files),
+        "lessons": memory.relevant(issue, selected_files) if memory else [],
+    }
+
+
+def _content_signals(path: str, content: str) -> dict[str, list[str]]:
+    lines = content.splitlines()
+    signals = {
+        "routes_or_endpoints": [],
+        "forms_or_buttons": [],
+        "ids_and_selectors": [],
+        "imports_or_symbols": [],
+    }
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if "@app.route" in stripped or "url_for(" in stripped or stripped.startswith(("def ", "class ")):
+            signals["routes_or_endpoints"].append(f"{line_number}: {stripped[:180]}")
+        if "<form" in stripped or "<button" in stripped or "type=\"submit\"" in stripped:
+            signals["forms_or_buttons"].append(f"{line_number}: {stripped[:180]}")
+        if "id=\"" in stripped or "class=\"" in stripped or "document.getElementById" in stripped:
+            signals["ids_and_selectors"].append(f"{line_number}: {stripped[:180]}")
+        if stripped.startswith("import ") or stripped.startswith("from "):
+            signals["imports_or_symbols"].append(f"{line_number}: {stripped[:180]}")
+    for key, value in signals.items():
+        signals[key] = value[:20]
+    signals["file_type"] = [Path(path).suffix.lower() or "no extension"]
+    return signals
+
+
+def _state_ownership_signals(path: str, content: str) -> dict[str, list[str]]:
+    lines = content.splitlines()
+    signals = {
+        "state_variables": [],
+        "state_writes": [],
+        "button_disable_writes": [],
+        "polling_or_fetch": [],
+        "event_handlers": [],
+        "render_functions": [],
+    }
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if any(token in stripped for token in ["let ", "const ", "var "]):
+            if any(word in stripped.lower() for word in ["state", "running", "pending", "disabled", "visible", "hidden"]):
+                signals["state_variables"].append(f"{line_number}: {stripped[:180]}")
+        if any(token in stripped for token in [" = ", "+=", "-=", ".classList", ".hidden"]):
+            if any(word in stripped.lower() for word in ["state", "running", "pending", "disabled", "hidden", "message"]):
+                signals["state_writes"].append(f"{line_number}: {stripped[:180]}")
+        if ".disabled" in stripped or "disabled =" in stripped:
+            signals["button_disable_writes"].append(f"{line_number}: {stripped[:180]}")
+        if "fetch(" in stripped or "setTimeout(" in stripped or "setInterval(" in stripped or "poll" in stripped.lower():
+            signals["polling_or_fetch"].append(f"{line_number}: {stripped[:180]}")
+        if "addEventListener" in stripped or "onsubmit" in stripped or "onclick" in stripped:
+            signals["event_handlers"].append(f"{line_number}: {stripped[:180]}")
+        if stripped.startswith("const render") or stripped.startswith("function render") or stripped.startswith("const update"):
+            signals["render_functions"].append(f"{line_number}: {stripped[:180]}")
+    for key, value in signals.items():
+        signals[key] = value[:24]
+    return signals
+
+
+def _git_state_for_evidence(app: Flask) -> dict:
+    repo_root = Path(app.root_path).parent
+    try:
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--short", "--branch"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        latest = subprocess.run(
+            ["git", "log", "-1", "--oneline"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        return {"branch": branch, "status": status, "latest_commit": latest}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _recent_app_logs_for_evidence(app: Flask) -> list[str]:
+    log_path = Path(app.instance_path) / "github_cto.log"
+    if not log_path.exists():
+        return []
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    interesting = [
+        line
+        for line in lines[-250:]
+        if any(token in line.lower() for token in ["error", "warning", "failed", "aider job", "reviewer", "validation"])
+    ]
+    return interesting[-40:]
+
+
+def _risk_notes_for_issue(issue: dict, selected_files: list[str]) -> list[str]:
+    text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}".lower()
+    notes = []
+    if any(term in text for term in ["screen", "page", "button", "form", "ui", "notification", "message", "hide", "show"]):
+        notes.append("UI issue: verify rendered DOM behavior, not just static template syntax.")
+    if any(path.endswith(".py") for path in selected_files):
+        notes.append("Python files selected: preserve imports, routes, indentation, and callable names.")
+    if any("/templates/" in path.replace("\\", "/") or path.endswith(".html") for path in selected_files):
+        notes.append("Template files selected: avoid nested forms, duplicate flash renderers, stale ids, and broken url_for calls.")
+    if any(path.endswith(".css") for path in selected_files):
+        notes.append("CSS selected: use classes instead of inline style attributes or element.style mutations.")
+    return notes
+
+
 def _retry_feedback_from_validation(message: str) -> str:
     return (
         "Your previous patch failed deterministic validation. Revise the patch to fix these issues without "
@@ -814,9 +1015,10 @@ def _review_failure_text(review: dict) -> str:
 def codex_timeline_for_aider(changed_files: int, run_id: str) -> list[dict[str, str]]:
     return [
         {"key": "intake", "title": "Read GitHub issue", "detail": "Loaded issue and comments from GitHub.", "status": "done"},
-        {"key": "context", "title": "Select code context", "detail": "Used selected files as Aider chat context.", "status": "done"},
+        {"key": "context", "title": "Inspect repo evidence", "detail": "Read selected file summaries, recent logs, and git state before editing.", "status": "done"},
+        {"key": "plan", "title": "Plan root-cause fix", "detail": "Planner agent identified likely owning files, constraints, and validation checks.", "status": "done"},
         {"key": "edit", "title": "Run Aider", "detail": f"Aider edited files in isolated workspace {run_id}.", "status": "done"},
-        {"key": "review", "title": "Human checkpoint", "detail": f"{changed_files} changed file(s) ready for review.", "status": "active"},
+        {"key": "review", "title": "Validate and review", "detail": f"{changed_files} changed file(s) passed gated review and are ready for human approval.", "status": "active"},
     ]
 
 

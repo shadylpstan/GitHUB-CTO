@@ -11,6 +11,9 @@ from typing import Any
 class AiderJob:
     id: str
     issue_number: int
+    read_branch: str = ""
+    target_branch: str = ""
+    selected_files: list[str] = field(default_factory=list)
     state: str = "queued"
     message: str = "Queued Aider run."
     logs: list[str] = field(default_factory=list)
@@ -25,8 +28,20 @@ class AiderJobRegistry:
         self._lock = threading.Lock()
         self._jobs: dict[str, AiderJob] = {}
 
-    def create(self, issue_number: int) -> AiderJob:
-        job = AiderJob(id=uuid.uuid4().hex, issue_number=issue_number)
+    def create(
+        self,
+        issue_number: int,
+        read_branch: str = "",
+        target_branch: str = "",
+        selected_files: list[str] | None = None,
+    ) -> AiderJob:
+        job = AiderJob(
+            id=uuid.uuid4().hex,
+            issue_number=issue_number,
+            read_branch=read_branch,
+            target_branch=target_branch,
+            selected_files=list(selected_files or []),
+        )
         with self._lock:
             self._jobs[job.id] = job
         return job
@@ -56,6 +71,9 @@ class AiderJobRegistry:
             return {
                 "id": job.id,
                 "issue_number": job.issue_number,
+                "read_branch": job.read_branch,
+                "target_branch": job.target_branch,
+                "selected_files_count": len(job.selected_files),
                 "state": job.state,
                 "message": job.message,
                 "logs": list(job.logs),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import logging
 import queue
 import shutil
@@ -49,6 +50,8 @@ class AiderBackend:
         repository: str,
         branch: str,
         reviewer_feedback: str = "",
+        implementation_plan: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
         attempt: int = 1,
         progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
@@ -68,7 +71,10 @@ class AiderBackend:
             self._progress(progress, "Cloned repository into isolated workspace.")
             logger.info("Aider initializing workspace git repo run_id=%s", run_id)
             self._baseline_git_repo(workspace)
-            prompt_path.write_text(self._prompt(issue, comments, selected_files, reviewer_feedback), encoding="utf-8")
+            prompt_path.write_text(
+                self._prompt(issue, comments, selected_files, reviewer_feedback, implementation_plan, evidence),
+                encoding="utf-8",
+            )
             self._progress(progress, f"Starting Aider attempt {attempt} with {len(selected_files)} selected file(s).")
             logger.info("Aider subprocess starting run_id=%s files=%s", run_id, selected_files)
             output = self._run_aider(workspace, prompt_path, selected_files, openai_api_key, progress)
@@ -306,24 +312,35 @@ class AiderBackend:
         comments: list[dict[str, Any]],
         selected_files: list[str],
         reviewer_feedback: str = "",
+        implementation_plan: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> str:
         comment_text = "\n".join(
             f"- {comment.get('user', {}).get('login', 'user')}: {(comment.get('body') or '')[:1200]}"
             for comment in comments[-8:]
         )
         files = "\n".join(f"- {path}" for path in selected_files) or "- Let Aider choose files from the repo map."
+        plan_text = _format_json_block(implementation_plan or {})
+        evidence_text = _format_json_block(evidence or {})
         return (
             f"Fix GitHub issue #{issue.get('number')}: {issue.get('title')}\n\n"
             f"Issue body:\n{issue.get('body') or 'No issue body provided.'}\n\n"
             f"Recent comments:\n{comment_text or 'No comments.'}\n\n"
             f"Files selected by GitHub CTO:\n{files}\n\n"
+            f"Pre-edit implementation plan from the planner agent:\n{plan_text}\n\n"
+            f"Evidence gathered before editing:\n{evidence_text}\n\n"
             + (f"Previous review feedback to fix in this retry:\n{reviewer_feedback}\n\n" if reviewer_feedback else "")
             +
-            "Make the minimal code changes needed to address the issue. "
+            "Make the minimal code changes needed to address the issue and the planner's root-cause hypothesis. "
+            "Use the evidence to understand what the app currently does before editing. "
             "Preserve existing behavior and style. Do not create a PR or commit. "
             "Leave the edited files in the working tree for Flask to review as a diff.\n\n"
             "Edit hygiene rules:\n"
             "- Use the selected files as the primary edit context. Make the requested issue change across selected files when they are relevant.\n"
+            "- Follow the pre-edit implementation plan unless the selected file contents clearly prove it is wrong. If you deviate, explain why in your output.\n"
+            "- Prefer one small root-cause fix over broad cleanup. Do not make cosmetic changes unrelated to the issue.\n"
+            "- For UI state changes, identify the single existing owner of that state before editing. If a poll loop or render function already sets disabled/hidden/text/progress, update that owner instead of adding a separate handler that can be overwritten.\n"
+            "- If multiple handlers currently write the same UI state, consolidate through a shared state variable or render function. Do not leave competing writers.\n"
             "- When a change introduces or depends on a connection point, update every selected artifact needed to keep that connection valid. Connection points include imports, dependencies, configuration keys, environment variables, templates, routes, endpoint names, selectors, IDs, CSS classes, generated assets, schema fields, migrations, tests, and documentation examples.\n"
             "- Do not create inline one-off wiring when the project has a dedicated place for that concern. Use selected supporting files such as stylesheets, config files, dependency manifests, schemas, docs, tests, or environment examples when they are included and relevant.\n"
             "- Do not add inline style attributes or inline event-handler attributes such as onclick, onchange, or onsubmit. Use CSS classes, hidden attributes, and addEventListener in script blocks instead.\n"
@@ -389,6 +406,16 @@ def _normalize_repository(repository: str) -> str:
     return f"{parts[0]}/{parts[1]}"
 
 
+def _format_json_block(value: dict[str, Any]) -> str:
+    if not value:
+        return "{}"
+    try:
+        text = json.dumps(value, indent=2, ensure_ascii=False)
+    except TypeError:
+        text = str(value)
+    return text[:30000]
+
+
 def _visible_aider_log_line(line: str, suppressing_code_output: bool) -> tuple[str, bool]:
     lowered = line.lower()
     if line.startswith("```"):
@@ -396,9 +423,9 @@ def _visible_aider_log_line(line: str, suppressing_code_output: bool) -> tuple[s
     if suppressing_code_output:
         return "", suppressing_code_output
     noisy_markers = [
-        "<<<<<<< search",
-        "=======",
-        ">>>>>>> replace",
+        "<" * 7 + " search",
+        "=" * 7,
+        ">" * 7 + " replace",
         "@@",
         "--- a/",
         "+++ b/",
