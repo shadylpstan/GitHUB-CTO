@@ -44,8 +44,12 @@ def _validate_single_file(app: Flask, path: str, content: str) -> list[str]:
     elif suffix in {".html", ".jinja", ".j2"}:
         _validate_template(app, normalized, content)
         _validate_html_balance(content)
+        _validate_template_ui_hygiene(content)
     elif suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+        _validate_js_ui_hygiene(content)
         _validate_with_command(["node", "--check"], normalized, content, suffix)
+    elif suffix in {".css", ".scss"}:
+        _validate_css_hygiene(content)
     elif suffix == ".java":
         _validate_with_command(["javac"], normalized, content, suffix)
 
@@ -85,6 +89,25 @@ def _validate_html_balance(content: str) -> None:
         self_closing = len(re.findall(rf"<{tag}[^>]*/>", content, flags=re.IGNORECASE))
         if opens - self_closing != closes:
             raise ProposalValidationError(f"unbalanced <{tag}> tags")
+
+
+def _validate_template_ui_hygiene(content: str) -> None:
+    if re.search(r"\sstyle\s*=", content, flags=re.IGNORECASE):
+        raise ProposalValidationError("contains inline style attributes; use CSS classes or hidden attributes instead")
+    if re.search(r"\son[a-z]+\s*=", content, flags=re.IGNORECASE):
+        raise ProposalValidationError("contains inline event handler attributes; use addEventListener in a script block instead")
+    _validate_js_ui_hygiene(content)
+    _validate_css_hygiene(content)
+
+
+def _validate_js_ui_hygiene(content: str) -> None:
+    if re.search(r"\.style\.(?:display|visibility|opacity|height|width|margin|padding|color|background)\s*=", content):
+        raise ProposalValidationError("mutates presentation through element.style; use hidden attributes or CSS classes instead")
+
+
+def _validate_css_hygiene(content: str) -> None:
+    if re.search(r"transition\s*:[^;{}]*\bdisplay\b", content, flags=re.IGNORECASE):
+        raise ProposalValidationError("uses transition: display, which is not meaningfully animatable; transition opacity, transform, or max-height instead")
 
 
 def _validate_with_command(command: list[str], path: str, content: str, suffix: str) -> None:

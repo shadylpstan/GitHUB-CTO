@@ -314,6 +314,8 @@ class AiderBackend:
             "- When a change introduces or depends on a connection point, update every selected artifact needed to keep that connection valid. Connection points include imports, dependencies, configuration keys, environment variables, templates, routes, endpoint names, selectors, IDs, CSS classes, generated assets, schema fields, migrations, tests, and documentation examples.\n"
             "- Do not create inline one-off wiring when the project has a dedicated place for that concern. Use selected supporting files such as stylesheets, config files, dependency manifests, schemas, docs, tests, or environment examples when they are included and relevant.\n"
             "- Do not add inline style attributes or inline event-handler attributes such as onclick, onchange, or onsubmit. Use CSS classes, hidden attributes, and addEventListener in script blocks instead.\n"
+            "- Do not mutate presentation through element.style in JavaScript. Toggle hidden attributes or CSS classes instead.\n"
+            "- Do not use transition: display; display is not meaningfully animatable. If animation is needed, transition opacity, transform, max-height, or another animatable property.\n"
             "- Before finishing, verify that every changed reference resolves within the selected files or existing project conventions. If a required supporting file is not selected, make the smallest safe change and clearly mention the missing file in the output instead of inventing a workaround.\n"
             "- If a selected file appears related but does not need edits, leave it unchanged.\n"
             "- Do not comment out removed code. Delete obsolete code cleanly.\n"
