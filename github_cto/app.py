@@ -15,7 +15,7 @@ from .config import Config
 from .github_client import GitHubClient, GitHubError
 from .index_jobs import IndexJobRegistry
 from .proposals import ProposalStore, attach_diffs
-from .repo_index import OpenAIEmbedder, RepositoryIndex
+from .repo_index import OpenAIEmbedder, OpenAIFileSummarizer, RepositoryIndex
 from .triage import triage_issue
 from .validators import ProposalValidationError, validate_proposal_changes
 from .workflow import GitHubCTOWorkflow
@@ -88,7 +88,13 @@ def create_app() -> Flask:
 
     def make_repo_index() -> RepositoryIndex:
         embedder = OpenAIEmbedder(app.config["OPENAI_API_KEY"], app.config["OPENAI_EMBEDDING_MODEL"])
-        return RepositoryIndex(app.instance_path + "/repo_index.sqlite3", embedder)
+        summarizer = OpenAIFileSummarizer(
+            app.config["OPENAI_API_KEY"],
+            app.config["FILE_METADATA_MODEL"],
+            timeout=app.config["FILE_METADATA_TIMEOUT"],
+            enabled=app.config["ENABLE_AI_FILE_METADATA"],
+        )
+        return RepositoryIndex(app.instance_path + "/repo_index.sqlite3", embedder, file_summarizer=summarizer)
 
     def proposal_store() -> ProposalStore:
         return ProposalStore(app.instance_path + "/proposals")
@@ -608,6 +614,12 @@ def _run_aider_job(
                 repo_index=RepositoryIndex(
                     app.instance_path + "/repo_index.sqlite3",
                     OpenAIEmbedder(app.config["OPENAI_API_KEY"], app.config["OPENAI_EMBEDDING_MODEL"]),
+                    file_summarizer=OpenAIFileSummarizer(
+                        app.config["OPENAI_API_KEY"],
+                        app.config["FILE_METADATA_MODEL"],
+                        timeout=app.config["FILE_METADATA_TIMEOUT"],
+                        enabled=app.config["ENABLE_AI_FILE_METADATA"],
+                    ),
                 ),
             )
             context = workflow.issue_context(issue_number)
@@ -739,7 +751,13 @@ def _run_index_rebuild(app: Flask, index_jobs: IndexJobRegistry, token: str, rep
         try:
             github = GitHubClient(token=token, repo=repo_name)
             embedder = OpenAIEmbedder(app.config["OPENAI_API_KEY"], app.config["OPENAI_EMBEDDING_MODEL"])
-            repo_index = RepositoryIndex(app.instance_path + "/repo_index.sqlite3", embedder)
+            summarizer = OpenAIFileSummarizer(
+                app.config["OPENAI_API_KEY"],
+                app.config["FILE_METADATA_MODEL"],
+                timeout=app.config["FILE_METADATA_TIMEOUT"],
+                enabled=app.config["ENABLE_AI_FILE_METADATA"],
+            )
+            repo_index = RepositoryIndex(app.instance_path + "/repo_index.sqlite3", embedder, file_summarizer=summarizer)
 
             def progress(**kwargs):
                 index_jobs.update(**kwargs)

@@ -13,6 +13,9 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    FILE_METADATA_MODEL = os.getenv("FILE_METADATA_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
+    ENABLE_AI_FILE_METADATA = os.getenv("ENABLE_AI_FILE_METADATA", "true").lower() == "true"
+    FILE_METADATA_TIMEOUT = int(os.getenv("FILE_METADATA_TIMEOUT", "45"))
     OPENAI_PLANNING_TIMEOUT = int(os.getenv("OPENAI_PLANNING_TIMEOUT", "60"))
     OPENAI_PATCH_TIMEOUT = int(os.getenv("OPENAI_PATCH_TIMEOUT", "180"))
     OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))

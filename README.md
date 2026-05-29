@@ -9,7 +9,7 @@ Codex-native Engineering Manager for GitHub issues. This Flask app connects to a
 - Issue severity scoring with P0/P1/P2/P3 prioritization.
 - Codex run timeline: intake, triage, repo scan, context selection, patch proposal, human review, GitHub execution.
 - Repository file discovery through the GitHub tree API.
-- Local SQLite vector index for semantic code discovery with file path, language, line range, SHA, and chunk metadata.
+- Local SQLite vector index for semantic code discovery with file path, language, line range, SHA, chunk metadata, and cached file responsibility metadata.
 - Session branch controls for the branch Codex reads/inspects and the branch PRs target.
 - Codex-style file selection and patch generation, including new files when needed.
 - Reviewable diffs and editable proposed file contents before any PR is opened.
@@ -38,6 +38,9 @@ GITHUB_TOKEN=github_pat_or_ghp_token
 GITHUB_REPOSITORY=owner/repo
 OPENAI_API_KEY=sk-your-key
 OPENAI_MODEL=gpt-4.1-mini
+FILE_METADATA_MODEL=gpt-4.1-mini
+ENABLE_AI_FILE_METADATA=true
+FILE_METADATA_TIMEOUT=45
 OPENAI_PLANNING_TIMEOUT=60
 OPENAI_PATCH_TIMEOUT=180
 OPENAI_MAX_RETRIES=2
@@ -93,7 +96,9 @@ python app.py
 
 ## Index Progress And Logs
 
-The repository index rebuild runs in the background for the selected read/inspect branch. The dashboard polls `/index/status` every second and updates:
+The repository index rebuild runs in the background for the selected read/inspect branch. It extracts deterministic file facts such as Python functions, Flask routes, imports, rendered templates, `url_for(...)` endpoints, and template form actions. When `ENABLE_AI_FILE_METADATA=true`, it also caches a concise AI-generated responsibility summary per file SHA so future ranking can prefer files by what they do, not only by filename.
+
+The dashboard polls `/index/status` every second and updates:
 
 - files scanned
 - files indexed

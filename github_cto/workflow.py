@@ -222,6 +222,12 @@ class GitHubCTOWorkflow:
     def _evidence_hits(self, issue: dict[str, Any], files: list[str], branch: str) -> list[Any]:
         issue_text = f"{issue.get('title') or ''}\n\n{issue.get('body') or ''}"
         cache: dict[str, str | None] = {}
+        metadata_by_path: dict[str, str] = {}
+        if self.repo_index:
+            try:
+                metadata_by_path = self.repo_index.metadata_text_for_paths(self.github.repo.full_name, branch, files)
+            except Exception as exc:
+                logger.warning("Could not load file metadata evidence: %s", exc)
 
         def fetch(path: str) -> str | None:
             if path in cache:
@@ -232,7 +238,8 @@ class GitHubCTOWorkflow:
                 if len(content.encode("utf-8")) > self.max_file_bytes:
                     cache[path] = None
                 else:
-                    cache[path] = content
+                    metadata = metadata_by_path.get(path, "")
+                    cache[path] = f"{metadata}\n\n{content}" if metadata else content
             except Exception:
                 cache[path] = None
             return cache[path]

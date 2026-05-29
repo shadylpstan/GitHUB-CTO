@@ -1,6 +1,8 @@
+import ast
 import json
 import logging
 import math
+import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
@@ -54,11 +56,85 @@ class OpenAIEmbedder:
         return [item["embedding"] for item in sorted(data, key=lambda item: item["index"])]
 
 
+class OpenAIFileSummarizer:
+    def __init__(self, api_key: str, model: str, timeout: int = 45, enabled: bool = True):
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self._enabled = enabled
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key and self._enabled)
+
+    def summarize(self, path: str, language: str, facts: str, content: str) -> dict[str, Any]:
+        if not self.enabled:
+            return {"summary": "", "keywords": []}
+        trimmed = content[:12000]
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": self.model,
+                    "temperature": 0.1,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Summarize code file responsibility for repository search. "
+                                "Return JSON with keys summary and keywords. "
+                                "summary must be one concise sentence about what behavior this file owns. "
+                                "keywords must be 5-12 short phrases grounded in the code. Do not invent behavior."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"path: {path}\n"
+                                f"language: {language}\n\n"
+                                f"deterministic facts:\n{facts or 'none'}\n\n"
+                                f"content:\n{trimmed}"
+                            ),
+                        },
+                    ],
+                },
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            logger.warning("File metadata summary request failed for %s: %s", path, exc)
+            return {"summary": "", "keywords": []}
+        if response.status_code >= 400:
+            logger.warning("File metadata summary failed for %s: %s", path, response.text[:500])
+            return {"summary": "", "keywords": []}
+        try:
+            payload = json.loads(response.json()["choices"][0]["message"]["content"])
+        except Exception as exc:
+            logger.warning("File metadata summary parse failed for %s: %s", path, exc)
+            return {"summary": "", "keywords": []}
+        keywords = payload.get("keywords", [])
+        if not isinstance(keywords, list):
+            keywords = []
+        return {
+            "summary": str(payload.get("summary") or "")[:600],
+            "keywords": [str(item)[:80] for item in keywords[:12]],
+        }
+
+
 class RepositoryIndex:
-    def __init__(self, db_path: str | Path, embedder: OpenAIEmbedder, chunk_lines: int = 80, overlap_lines: int = 12):
+    def __init__(
+        self,
+        db_path: str | Path,
+        embedder: OpenAIEmbedder,
+        chunk_lines: int = 80,
+        overlap_lines: int = 12,
+        file_summarizer: OpenAIFileSummarizer | None = None,
+    ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedder = embedder
+        self.file_summarizer = file_summarizer
         self.chunk_lines = chunk_lines
         self.overlap_lines = overlap_lines
         self._init_db()
@@ -89,6 +165,23 @@ class RepositoryIndex:
             )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_chunks_repo_branch ON chunks(repo, branch)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path)")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS file_metadata (
+                    repo TEXT NOT NULL,
+                    branch TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    sha TEXT,
+                    language TEXT,
+                    facts TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    keywords TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (repo, branch, path)
+                )
+                """
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_file_metadata_repo_branch ON file_metadata(repo, branch)")
 
     def stats(self, repo: str, branch: str) -> IndexStats:
         with self._connect() as connection:
@@ -128,6 +221,25 @@ class RepositoryIndex:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def metadata_for_paths(self, repo: str, branch: str, paths: list[str]) -> dict[str, dict[str, Any]]:
+        if not paths:
+            return {}
+        placeholders = ",".join("?" for _ in paths)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT path, language, facts, summary, keywords
+                FROM file_metadata
+                WHERE repo = ? AND branch = ? AND path IN ({placeholders})
+                """,
+                (repo, branch, *paths),
+            ).fetchall()
+        return {row["path"]: dict(row) for row in rows}
+
+    def metadata_text_for_paths(self, repo: str, branch: str, paths: list[str]) -> dict[str, str]:
+        metadata = self.metadata_for_paths(repo, branch, paths)
+        return {path: _metadata_search_text(item) for path, item in metadata.items()}
+
     def delete_index(self, repo: str, branch: str) -> int:
         connection = self._connect()
         try:
@@ -135,6 +247,7 @@ class RepositoryIndex:
                 "DELETE FROM chunks WHERE repo = ? AND branch = ?",
                 (repo, branch),
             )
+            connection.execute("DELETE FROM file_metadata WHERE repo = ? AND branch = ?", (repo, branch))
             connection.commit()
             return cursor.rowcount
         finally:
@@ -166,6 +279,7 @@ class RepositoryIndex:
         logger.info("Index rebuild candidate files=%s repo=%s", len(paths), repo)
 
         records: list[dict[str, Any]] = []
+        metadata_records: list[dict[str, Any]] = []
         for index, path in enumerate(paths, start=1):
             self._progress(
                 progress,
@@ -184,7 +298,11 @@ class RepositoryIndex:
                 logger.info("Skipping oversized file during index: %s", path)
                 self._progress(progress, files_skipped=index - len({record["path"] for record in records}))
                 continue
-            file_chunks = self._chunk_file(path, file_payload["sha"], content)
+            language = _language_for_path(path)
+            metadata = self._file_metadata(repo, branch, path, file_payload["sha"], language, content)
+            metadata_records.append(metadata)
+            metadata_text = _metadata_search_text(metadata)
+            file_chunks = self._chunk_file(path, file_payload["sha"], content, metadata_text=metadata_text)
             records.extend(file_chunks)
             indexed_files = len({record["path"] for record in records})
             self._progress(
@@ -198,6 +316,26 @@ class RepositoryIndex:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:
             connection.execute("DELETE FROM chunks WHERE repo = ? AND branch = ?", (repo, branch))
+            connection.execute("DELETE FROM file_metadata WHERE repo = ? AND branch = ?", (repo, branch))
+            for metadata in metadata_records:
+                connection.execute(
+                    """
+                    INSERT INTO file_metadata
+                    (repo, branch, path, sha, language, facts, summary, keywords, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        repo,
+                        branch,
+                        metadata["path"],
+                        metadata["sha"],
+                        metadata["language"],
+                        metadata["facts"],
+                        metadata["summary"],
+                        json.dumps(metadata["keywords"]),
+                        now,
+                    ),
+                )
             embedded_so_far = 0
             for batch in _batched(records, 32):
                 self._progress(
@@ -303,7 +441,43 @@ class RepositoryIndex:
             selected.extend(by_path.get(path, [])[:max_chunks_per_file])
         return selected
 
-    def _chunk_file(self, path: str, sha: str, content: str) -> list[dict[str, Any]]:
+    def _file_metadata(self, repo: str, branch: str, path: str, sha: str, language: str, content: str) -> dict[str, Any]:
+        facts = extract_file_facts(path, content)
+        cached = self._cached_metadata(repo, branch, path, sha)
+        if cached:
+            return cached
+        ai_summary = {"summary": "", "keywords": []}
+        if self.file_summarizer and self.file_summarizer.enabled:
+            ai_summary = self.file_summarizer.summarize(path, language, facts, content)
+        return {
+            "path": path,
+            "sha": sha,
+            "language": language,
+            "facts": facts,
+            "summary": ai_summary.get("summary", ""),
+            "keywords": ai_summary.get("keywords", []),
+        }
+
+    def _cached_metadata(self, repo: str, branch: str, path: str, sha: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT path, sha, language, facts, summary, keywords
+                FROM file_metadata
+                WHERE repo = ? AND branch = ? AND path = ? AND sha = ?
+                """,
+                (repo, branch, path, sha),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        try:
+            result["keywords"] = json.loads(result.get("keywords") or "[]")
+        except Exception:
+            result["keywords"] = []
+        return result
+
+    def _chunk_file(self, path: str, sha: str, content: str, metadata_text: str = "") -> list[dict[str, Any]]:
         lines = content.splitlines()
         if not lines:
             return []
@@ -322,6 +496,7 @@ class RepositoryIndex:
                         "start_line": start + 1,
                         "end_line": end,
                         "content": chunk_text,
+                        "metadata_text": metadata_text,
                     }
                 )
             if end >= len(lines):
@@ -333,6 +508,7 @@ class RepositoryIndex:
             f"path: {record['path']}\n"
             f"language: {record['language']}\n"
             f"lines: {record['start_line']}-{record['end_line']}\n\n"
+            f"{record.get('metadata_text', '')}\n\n"
             f"{record['content']}"
         )
 
@@ -369,6 +545,167 @@ def _language_for_path(path: str) -> str:
         "yml": "yaml",
         "yaml": "yaml",
     }.get(suffix, suffix or "text")
+
+
+def extract_file_facts(path: str, content: str) -> str:
+    normalized = path.replace("\\", "/").lower()
+    if normalized.endswith(".py"):
+        return _python_facts(content)
+    if normalized.endswith((".html", ".jinja", ".j2")):
+        return _template_facts(content)
+    if normalized.endswith((".js", ".jsx", ".ts", ".tsx")):
+        return _script_facts(content)
+    return _generic_facts(content)
+
+
+def _python_facts(content: str) -> str:
+    facts: list[str] = []
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return _generic_facts(content)
+    imports: list[str] = []
+    functions: list[str] = []
+    classes: list[str] = []
+    routes: list[str] = []
+    templates: list[str] = []
+    endpoints: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            imports.extend(f"{module}.{alias.name}".strip(".") for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.append(node.name)
+            for decorator in node.decorator_list:
+                route = _route_from_decorator(decorator)
+                if route:
+                    routes.append(f"{node.name}: {route}")
+        elif isinstance(node, ast.ClassDef):
+            classes.append(node.name)
+        elif isinstance(node, ast.Call):
+            call_name = _call_name(node.func)
+            if call_name == "render_template" and node.args and isinstance(node.args[0], ast.Constant):
+                templates.append(str(node.args[0].value))
+            elif call_name == "url_for" and node.args and isinstance(node.args[0], ast.Constant):
+                endpoints.append(str(node.args[0].value))
+
+    if imports:
+        facts.append("imports: " + ", ".join(_unique(imports)[:24]))
+    if classes:
+        facts.append("classes: " + ", ".join(_unique(classes)[:24]))
+    if functions:
+        facts.append("functions: " + ", ".join(_unique(functions)[:60]))
+    if routes:
+        facts.append("flask routes: " + ", ".join(_unique(routes)[:32]))
+    if templates:
+        facts.append("renders templates: " + ", ".join(_unique(templates)[:24]))
+    if endpoints:
+        facts.append("url_for endpoints: " + ", ".join(_unique(endpoints)[:24]))
+    return "\n".join(facts)
+
+
+def _route_from_decorator(node: ast.AST) -> str:
+    if not isinstance(node, ast.Call):
+        return ""
+    name = _call_name(node.func)
+    if not name.endswith(".route") and name != "route":
+        return ""
+    route = ""
+    if node.args and isinstance(node.args[0], ast.Constant):
+        route = str(node.args[0].value)
+    methods = []
+    for keyword in node.keywords:
+        if keyword.arg == "methods" and isinstance(keyword.value, (ast.List, ast.Tuple)):
+            methods = [str(item.value) for item in keyword.value.elts if isinstance(item, ast.Constant)]
+    return f"{route} methods={methods or ['GET']}"
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def _template_facts(content: str) -> str:
+    facts = []
+    blocks = re.findall(r"{%\s*block\s+([a-zA-Z_][\w-]*)", content)
+    extends = re.findall(r"{%\s*extends\s+[\"']([^\"']+)", content)
+    includes = re.findall(r"{%\s*include\s+[\"']([^\"']+)", content)
+    url_for = re.findall(r"url_for\([\"']([^\"']+)", content)
+    forms = re.findall(r"<form[^>]+action=\"?{{\s*url_for\([\"']([^\"']+)", content)
+    ids = re.findall(r"\sid=[\"']([^\"']+)", content)
+    buttons = re.findall(r"<button[^>]*>(.*?)</button>", content, flags=re.DOTALL)
+    if extends:
+        facts.append("extends: " + ", ".join(_unique(extends)))
+    if includes:
+        facts.append("includes: " + ", ".join(_unique(includes)))
+    if blocks:
+        facts.append("jinja blocks: " + ", ".join(_unique(blocks)))
+    if url_for:
+        facts.append("url_for endpoints: " + ", ".join(_unique(url_for)[:32]))
+    if forms:
+        facts.append("form actions: " + ", ".join(_unique(forms)[:24]))
+    if ids:
+        facts.append("element ids: " + ", ".join(_unique(ids)[:32]))
+    if buttons:
+        labels = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", item)).strip() for item in buttons]
+        labels = [label for label in labels if label]
+        facts.append("button labels: " + ", ".join(_unique(labels)[:16]))
+    return "\n".join(facts)
+
+
+def _script_facts(content: str) -> str:
+    facts = []
+    imports = re.findall(r"import\s+(?:[^'\";]+?\s+from\s+)?[\"']([^\"']+)", content)
+    exports = re.findall(r"export\s+(?:default\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)", content)
+    functions = re.findall(r"(?:function\s+|const\s+|let\s+|var\s+)([A-Za-z_$][\w$]*)\s*(?:=|\()", content)
+    selectors = re.findall(r"getElementById\([\"']([^\"']+)", content)
+    if imports:
+        facts.append("imports: " + ", ".join(_unique(imports)[:24]))
+    if exports:
+        facts.append("exports: " + ", ".join(_unique(exports)[:24]))
+    if functions:
+        facts.append("functions/constants: " + ", ".join(_unique(functions)[:40]))
+    if selectors:
+        facts.append("dom ids: " + ", ".join(_unique(selectors)[:24]))
+    return "\n".join(facts)
+
+
+def _generic_facts(content: str) -> str:
+    matches = re.findall(r"\b(?:class|def|function|route|url_for|render_template|import)\b[^\n]{0,120}", content)
+    return "notable lines: " + " | ".join(matches[:20]) if matches else ""
+
+
+def _metadata_search_text(metadata: dict[str, Any]) -> str:
+    keywords = metadata.get("keywords") or []
+    if isinstance(keywords, str):
+        try:
+            keywords = json.loads(keywords)
+        except Exception:
+            keywords = [keywords]
+    return (
+        "# File responsibility metadata\n"
+        f"purpose: {metadata.get('summary') or ''}\n"
+        f"keywords: {', '.join(str(item) for item in keywords[:12])}\n"
+        f"facts:\n{metadata.get('facts') or ''}"
+    ).strip()
+
+
+def _unique(items: list[str]) -> list[str]:
+    seen = set()
+    unique = []
+    for item in items:
+        item = item.strip()
+        if item and item not in seen:
+            unique.append(item)
+            seen.add(item)
+    return unique
 
 
 INDEX_EXTENSIONS = {
