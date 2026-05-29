@@ -105,7 +105,7 @@
     </section>
   {% endif %}
 
-  <form method="post" action="{{ url_for('create_pr_from_proposal', proposal_id=proposal.id) }}" class="review-form" id="review-proposal-form" target="_blank" data-loading="Creating reviewed PR...">
+  <form method="post" action="{{ url_for('create_pr_from_proposal', proposal_id=proposal.id) }}" class="review-form" id="review-proposal-form" data-loading="Creating reviewed PR...">
     <section class="panel">
       <div class="panel-title">
         <h2>PR Narrative</h2>
