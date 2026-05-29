@@ -659,6 +659,8 @@ def _run_aider_job(
             for attempt in range(1, max_attempts + 1):
                 if attempt > 1:
                     progress(f"Retrying Aider with review feedback (attempt {attempt}/{max_attempts}).")
+                else:
+                    progress(f"Starting review-gated Aider attempt {attempt}/{max_attempts}.")
                 result = backend.run_issue(
                     issue=issue,
                     comments=comments,
@@ -681,6 +683,7 @@ def _run_aider_job(
                     reviewer_feedback = _retry_feedback_from_validation(last_failure)
                     if attempt >= max_attempts:
                         raise
+                    progress("Sending validation feedback back to Aider for another attempt.")
                     continue
                 if validation_warnings:
                     proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
@@ -696,6 +699,7 @@ def _run_aider_job(
                 reviewer_feedback = review.get("retry_prompt") or last_failure
                 if attempt >= max_attempts:
                     raise AiderRunError(last_failure)
+                progress("Sending reviewer feedback back to Aider for another attempt.")
 
             if proposal is None:
                 raise AiderRunError(last_failure or "Aider review loop did not produce a proposal.")

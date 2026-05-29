@@ -210,6 +210,7 @@ class AiderBackend:
         reader.start()
         last_heartbeat = 0.0
         output_closed = False
+        suppressing_code_output = False
         while True:
             try:
                 line = output_queue.get(timeout=0.5)
@@ -219,8 +220,10 @@ class AiderBackend:
                     output_parts.append(line)
                     clean = line.strip()
                     if clean:
-                        logger.info("Aider output: %s", clean[:500])
-                        self._progress(progress, clean[:500])
+                        visible_line, suppressing_code_output = _visible_aider_log_line(clean, suppressing_code_output)
+                        logger.info("Aider output: %s", visible_line[:500])
+                        if visible_line:
+                            self._progress(progress, visible_line[:500])
             except queue.Empty:
                 pass
             return_code = process.poll()
@@ -384,3 +387,24 @@ def _normalize_repository(repository: str) -> str:
     if len(parts) < 2:
         return ""
     return f"{parts[0]}/{parts[1]}"
+
+
+def _visible_aider_log_line(line: str, suppressing_code_output: bool) -> tuple[str, bool]:
+    lowered = line.lower()
+    if line.startswith("```"):
+        return ("Aider is drafting file edits..." if not suppressing_code_output else "", not suppressing_code_output)
+    if suppressing_code_output:
+        return "", suppressing_code_output
+    noisy_markers = [
+        "<<<<<<< search",
+        "=======",
+        ">>>>>>> replace",
+        "@@",
+        "--- a/",
+        "+++ b/",
+    ]
+    if any(marker in lowered for marker in noisy_markers):
+        return "Aider is drafting file edits...", suppressing_code_output
+    if len(line) > 220 and any(token in line for token in ["{", "}", "</", "def ", "class ", "const ", "function "]):
+        return "Aider emitted a long code line; hidden from live logs.", suppressing_code_output
+    return line, suppressing_code_output
