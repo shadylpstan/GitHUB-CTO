@@ -687,9 +687,10 @@ def _run_aider_job(
                     continue
                 if validation_warnings:
                     proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
+                    progress(f"Validation completed with {len(validation_warnings)} warning(s).")
 
                 progress("Reviewing generated changes against the issue.")
-                review = reviewer.review(issue, proposal.get("changes", []))
+                review = reviewer.review(issue, proposal.get("changes", []), validation_warnings=validation_warnings)
                 proposal.setdefault("patch", {})["reviewer"] = review
                 if (review.get("verdict") or "").lower() == "pass":
                     progress("Reviewer agent passed the generated changes.")

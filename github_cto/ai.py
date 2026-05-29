@@ -336,10 +336,16 @@ class PatchReviewAgent:
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    def review(self, issue: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
+    def review(
+        self,
+        issue: dict[str, Any],
+        changes: list[dict[str, Any]],
+        validation_warnings: list[str] | None = None,
+    ) -> dict[str, Any]:
         if not self.enabled:
             return {"verdict": "pass", "confidence": 0.0, "findings": [], "retry_prompt": ""}
         change_text = "\n\n".join(_review_change_text(change) for change in changes)[:50000]
+        warning_text = "\n".join(f"- {warning}" for warning in (validation_warnings or []))
         reviewer = CodexEngineeringManager(
             self.api_key,
             self.model,
@@ -369,6 +375,7 @@ class PatchReviewAgent:
                     "content": (
                         f"Issue #{issue.get('number')}: {issue.get('title')}\n\n"
                         f"Issue body:\n{issue.get('body') or ''}\n\n"
+                        f"Deterministic validation warnings:\n{warning_text or 'None.'}\n\n"
                         f"Proposed changes:\n\n{change_text or 'No changes.'}"
                     ),
                 },

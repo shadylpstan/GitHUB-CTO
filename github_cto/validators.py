@@ -44,12 +44,13 @@ def _validate_single_file(app: Flask, path: str, content: str) -> list[str]:
     elif suffix in {".html", ".jinja", ".j2"}:
         _validate_template(app, normalized, content)
         _validate_html_balance(content)
-        _validate_template_ui_hygiene(content)
+        _validate_no_nested_forms(content)
+        warnings.extend(_validate_template_ui_hygiene(content))
     elif suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
-        _validate_js_ui_hygiene(content)
+        warnings.extend(_validate_js_ui_hygiene(content))
         _validate_with_command(["node", "--check"], normalized, content, suffix)
     elif suffix in {".css", ".scss"}:
-        _validate_css_hygiene(content)
+        warnings.extend(_validate_css_hygiene(content))
     elif suffix == ".java":
         _validate_with_command(["javac"], normalized, content, suffix)
 
@@ -91,23 +92,42 @@ def _validate_html_balance(content: str) -> None:
             raise ProposalValidationError(f"unbalanced <{tag}> tags")
 
 
-def _validate_template_ui_hygiene(content: str) -> None:
+def _validate_no_nested_forms(content: str) -> None:
+    depth = 0
+    for match in re.finditer(r"</?form\b[^>]*>", content, flags=re.IGNORECASE):
+        token = match.group(0).lower()
+        if token.startswith("</"):
+            depth = max(0, depth - 1)
+        else:
+            if depth > 0:
+                raise ProposalValidationError("contains nested <form> elements; use formaction/formmethod or move secondary forms outside the main form")
+            if not token.endswith("/>"):
+                depth += 1
+
+
+def _validate_template_ui_hygiene(content: str) -> list[str]:
+    warnings = []
     if re.search(r"\sstyle\s*=", content, flags=re.IGNORECASE):
-        raise ProposalValidationError("contains inline style attributes; use CSS classes or hidden attributes instead")
+        warnings.append("contains inline style attributes; prefer CSS classes or hidden attributes instead")
     if re.search(r"\son[a-z]+\s*=", content, flags=re.IGNORECASE):
-        raise ProposalValidationError("contains inline event handler attributes; use addEventListener in a script block instead")
-    _validate_js_ui_hygiene(content)
-    _validate_css_hygiene(content)
+        warnings.append("contains inline event handler attributes; prefer addEventListener in a script block instead")
+    warnings.extend(_validate_js_ui_hygiene(content))
+    warnings.extend(_validate_css_hygiene(content))
+    return warnings
 
 
-def _validate_js_ui_hygiene(content: str) -> None:
+def _validate_js_ui_hygiene(content: str) -> list[str]:
+    warnings = []
     if re.search(r"\.style\.(?:display|visibility|opacity|height|width|margin|padding|color|background)\s*=", content):
-        raise ProposalValidationError("mutates presentation through element.style; use hidden attributes or CSS classes instead")
+        warnings.append("mutates presentation through element.style; prefer hidden attributes or CSS classes instead")
+    return warnings
 
 
-def _validate_css_hygiene(content: str) -> None:
+def _validate_css_hygiene(content: str) -> list[str]:
+    warnings = []
     if re.search(r"transition\s*:[^;{}]*\bdisplay\b", content, flags=re.IGNORECASE):
-        raise ProposalValidationError("uses transition: display, which is not meaningfully animatable; transition opacity, transform, or max-height instead")
+        warnings.append("uses transition: display, which is not meaningfully animatable; prefer opacity, transform, or max-height")
+    return warnings
 
 
 def _validate_with_command(command: list[str], path: str, content: str, suffix: str) -> None:
