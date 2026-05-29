@@ -29,7 +29,7 @@
     <main class="shell">
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
-          <section class="flash-stack">
+          <section class="flash-stack" id="flash-stack">
             {% for category, message in messages %}
               <div class="flash {{ category }}">{{ message }}</div>
             {% endfor %}
