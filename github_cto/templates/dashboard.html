@@ -2,6 +2,15 @@
 {% block title %}Dashboard | GitHub CTO{% endblock %}
 
 {% block content %}
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-stack" id="flash-stack">
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
   <section class="dashboard-head">
     <div>
       <p class="eyebrow">Codex connected as {{ user.login }}</p>
@@ -204,6 +213,7 @@
       const deleteButton = document.getElementById("delete-index-button");
       const tree = document.getElementById("index-files-tree");
       const toggleTree = document.getElementById("toggle-index-files");
+      const flashStack = document.getElementById("flash-stack");
 
       if (toggleTree && tree) {
         toggleTree.addEventListener("click", () => {
@@ -264,6 +274,10 @@
           }
           if (wasRunning && status.state === "complete") {
             await refreshIndexedFiles();
+            // Remove flash messages after index rebuild completes
+            if (flashStack) {
+              flashStack.hidden = true;
+            }
           }
         } catch (error) {
           if (message) message.textContent = "Could not read index status.";
