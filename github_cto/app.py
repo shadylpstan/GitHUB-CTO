@@ -335,6 +335,9 @@ def create_app() -> Flask:
                 read_branch=settings["read_branch"],
                 target_branch=settings["target_branch"],
             )
+            validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
+            if validation_warnings:
+                proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
             proposal_id = proposal_store().save(proposal)
             app.logger.info("Proposal generated issue=%s proposal_id=%s changes=%s", issue_number, proposal_id, len(proposal.get("changes", [])))
             flash("Codex proposal generated. Review the diffs before creating the PR.", "success")
@@ -515,6 +518,9 @@ def create_app() -> Flask:
                     raise ValueError(f"Unknown PR target branch: {target_branch}")
                 proposal["target_branch"] = target_branch
                 session["github_target_branch"] = target_branch
+            validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
+            if validation_warnings:
+                proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
             store.update(proposal)
 
             workflow = make_workflow()
