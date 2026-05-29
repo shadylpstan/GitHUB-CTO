@@ -153,14 +153,7 @@
           <textarea name="content_{{ loop.index0 }}" rows="18" spellcheck="false">{{ change.proposed_content }}</textarea>
         </label>
         {% if proposal.codex and proposal.codex.agent == "Aider CLI Backend" %}
-          <form method="post" action="{{ url_for('run_aider', issue_number=proposal.issue.number) }}" class="retry-file-form" data-loading="Retrying with Aider...">
-            <input type="hidden" name="files" value="{{ change.path }}">
-            <input type="hidden" name="read_branch" value="{{ proposal.read_branch or proposal.base_branch }}">
-            <input type="hidden" name="target_branch" value="{{ proposal.target_branch or proposal.base_branch }}">
-            <button class="secondary" type="submit">
-              <span class="button-label">Retry this file with Aider</span>
-            </button>
-          </form>
+          <!-- Move the retry-file form outside the main review form to avoid nested forms -->
         {% endif %}
       </section>
     {% endfor %}
@@ -173,4 +166,17 @@
       <button class="primary" type="submit"><span class="button-label">Approve Codex Run And Create PR</span></button>
     </section>
   </form>
+
+  {% for change in proposal.changes %}
+    {% if proposal.codex and proposal.codex.agent == "Aider CLI Backend" %}
+      <form method="post" action="{{ url_for('run_aider', issue_number=proposal.issue.number) }}" class="retry-file-form" data-loading="Retrying with Aider...">
+        <input type="hidden" name="files" value="{{ change.path }}">
+        <input type="hidden" name="read_branch" value="{{ proposal.read_branch or proposal.base_branch }}">
+        <input type="hidden" name="target_branch" value="{{ proposal.target_branch or proposal.base_branch }}">
+        <button class="secondary" type="submit">
+          <span class="button-label">Retry this file with Aider</span>
+        </button>
+      </form>
+    {% endif %}
+  {% endfor %}
 {% endblock %}
