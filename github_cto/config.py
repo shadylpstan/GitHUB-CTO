@@ -36,4 +36,6 @@ class Config:
     AIDER_TIMEOUT = int(os.getenv("AIDER_TIMEOUT", "600"))
     AIDER_TEST_COMMAND = os.getenv("AIDER_TEST_COMMAND", "")
     AIDER_KEEP_RUNS = int(os.getenv("AIDER_KEEP_RUNS", "5"))
+    AIDER_REVIEW_MAX_ATTEMPTS = int(os.getenv("AIDER_REVIEW_MAX_ATTEMPTS", "2"))
+    AIDER_REVIEW_TIMEOUT = int(os.getenv("AIDER_REVIEW_TIMEOUT", "60"))
     AGENT_OPENAI_MAX_RETRIES = int(os.getenv("AGENT_OPENAI_MAX_RETRIES", "0"))

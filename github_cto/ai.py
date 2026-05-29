@@ -321,6 +321,60 @@ class CodexEngineeringManager:
             f"- step {item.get('step')}: {item.get('action')} {item.get('path', '')} - {item.get('summary', '')}"
             for item in history[-8:]
         )
+
+
+class PatchReviewAgent:
+    """LLM quality gate that reviews Aider patches without editing code."""
+
+    def __init__(self, api_key: str, model: str, timeout: int = 60, max_retries: int = 1):
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    def review(self, issue: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
+        if not self.enabled:
+            return {"verdict": "pass", "confidence": 0.0, "findings": [], "retry_prompt": ""}
+        change_text = "\n\n".join(_review_change_text(change) for change in changes)[:50000]
+        reviewer = CodexEngineeringManager(
+            self.api_key,
+            self.model,
+            planning_timeout=self.timeout,
+            patch_timeout=self.timeout,
+            max_retries=self.max_retries,
+        )
+        return reviewer._chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict senior code reviewer for an autonomous coding app. "
+                        "Review whether the proposed patch correctly and safely addresses the GitHub issue. "
+                        "Do not suggest broad refactors. Do not require perfection. "
+                        "Fail only for concrete correctness, safety, validation, or issue-mismatch problems. "
+                        "Look especially for changes that do not address the requested behavior, duplicate UI, "
+                        "invalid HTML structure such as nested forms, missing connection updates, broad unrelated CSS or backend changes, "
+                        "inline hacks where the project has better conventions, stale references, missing imports, and broken routes/templates. "
+                        "Return JSON only with keys: verdict, confidence, findings, retry_prompt. "
+                        "verdict must be pass or fail. findings must be an array of objects with severity, file, issue, suggestion. "
+                        "If verdict is fail, retry_prompt must be concise instructions for the coding agent to fix the patch."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Issue #{issue.get('number')}: {issue.get('title')}\n\n"
+                        f"Issue body:\n{issue.get('body') or ''}\n\n"
+                        f"Proposed changes:\n\n{change_text or 'No changes.'}"
+                    ),
+                },
+            ],
+            timeout=self.timeout,
+        )
         return self._chat_json(
             [
                 {
@@ -359,6 +413,19 @@ def _trim_content(content: str, max_chars: int) -> str:
         content[:head_chars]
         + "\n\n# ... content trimmed for Codex context budget ...\n\n"
         + content[-tail_chars:]
+    )
+
+
+def _review_change_text(change: dict[str, Any]) -> str:
+    diff = change.get("unified_diff") or ""
+    if not diff:
+        original = change.get("original_content") or ""
+        proposed = change.get("proposed_content") or ""
+        diff = f"original chars: {len(original)}\nproposed chars: {len(proposed)}\n"
+    return (
+        f"--- CHANGE: {change.get('path')} ({change.get('status')}) ---\n"
+        f"{_trim_content(diff, 12000)}\n"
+        f"--- END CHANGE ---"
     )
 
 

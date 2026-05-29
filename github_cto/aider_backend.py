@@ -48,6 +48,8 @@ class AiderBackend:
         github_token: str,
         repository: str,
         branch: str,
+        reviewer_feedback: str = "",
+        attempt: int = 1,
         progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         if not openai_api_key:
@@ -66,8 +68,8 @@ class AiderBackend:
             self._progress(progress, "Cloned repository into isolated workspace.")
             logger.info("Aider initializing workspace git repo run_id=%s", run_id)
             self._baseline_git_repo(workspace)
-            prompt_path.write_text(self._prompt(issue, comments, selected_files), encoding="utf-8")
-            self._progress(progress, f"Starting Aider with {len(selected_files)} selected file(s).")
+            prompt_path.write_text(self._prompt(issue, comments, selected_files, reviewer_feedback), encoding="utf-8")
+            self._progress(progress, f"Starting Aider attempt {attempt} with {len(selected_files)} selected file(s).")
             logger.info("Aider subprocess starting run_id=%s files=%s", run_id, selected_files)
             output = self._run_aider(workspace, prompt_path, selected_files, openai_api_key, progress)
             self._progress(progress, "Aider subprocess completed.")
@@ -295,7 +297,13 @@ class AiderBackend:
             )
         return changes
 
-    def _prompt(self, issue: dict[str, Any], comments: list[dict[str, Any]], selected_files: list[str]) -> str:
+    def _prompt(
+        self,
+        issue: dict[str, Any],
+        comments: list[dict[str, Any]],
+        selected_files: list[str],
+        reviewer_feedback: str = "",
+    ) -> str:
         comment_text = "\n".join(
             f"- {comment.get('user', {}).get('login', 'user')}: {(comment.get('body') or '')[:1200]}"
             for comment in comments[-8:]
@@ -306,6 +314,8 @@ class AiderBackend:
             f"Issue body:\n{issue.get('body') or 'No issue body provided.'}\n\n"
             f"Recent comments:\n{comment_text or 'No comments.'}\n\n"
             f"Files selected by GitHub CTO:\n{files}\n\n"
+            + (f"Previous review feedback to fix in this retry:\n{reviewer_feedback}\n\n" if reviewer_feedback else "")
+            +
             "Make the minimal code changes needed to address the issue. "
             "Preserve existing behavior and style. Do not create a PR or commit. "
             "Leave the edited files in the working tree for Flask to review as a diff.\n\n"

@@ -43,6 +43,28 @@ def _ui_candidate_score(path: str) -> int:
     return score
 
 
+def _issue_specific_ui_score(issue: dict[str, Any], path: str) -> int:
+    text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}".lower()
+    normalized = path.replace("\\", "/").lower()
+    score = 0
+    if any(term in text for term in ["flash", "notification", "message", "green text", "stale message"]):
+        if normalized.endswith("templates/base.html"):
+            score += 90
+        if normalized.endswith("templates/dashboard.html"):
+            score += 85
+        if normalized.endswith("static/styles.css") or normalized.endswith("styles.css"):
+            score += 35
+    if "dashboard" in text or "home screen" in text:
+        if normalized.endswith("templates/dashboard.html"):
+            score += 70
+        if normalized.endswith("templates/base.html"):
+            score += 25
+    if any(term in text for term in ["progress panel", "poll", "rebuild finishes", "after the rebuild finishes"]):
+        if normalized.endswith("templates/dashboard.html"):
+            score += 75
+    return score
+
+
 def _priority_score(path: str, priorities: list[str]) -> int:
     normalized = path.replace("\\", "/").lower()
     for index, candidate in enumerate(priorities):
@@ -286,10 +308,12 @@ class GitHubCTOWorkflow:
             if _is_template_or_ui(path) and path not in selected_set
         ]
         prioritized = sorted(ui_candidates, key=_ui_candidate_score, reverse=True)
+        prioritized = sorted(prioritized, key=lambda path: _issue_specific_ui_score(issue, path) + _ui_candidate_score(path), reverse=True)
         merged = list(selected)
         for path in prioritized[:2]:
             insert_at = min(len(merged), max(0, self.max_selected_files - 1))
             merged.insert(insert_at, path)
+        merged.sort(key=lambda path: _issue_specific_ui_score(issue, path), reverse=True)
         return merged
 
     def _balance_scope_candidates(self, selected: list[str], scope: Any, fallback: list[str] | None = None) -> list[str]:

@@ -80,6 +80,8 @@ def classify_issue_scope(issue: dict[str, Any]) -> IssueScope:
     data_needed = _contains_terms(text, data_terms)
     tests_needed = _contains_terms(text, test_terms)
     config_needed = _contains_terms(text, config_terms)
+    if any(phrase in text for phrase in ["do not change the repository indexing logic", "do not change indexing logic", "do not change the indexing logic"]):
+        data_needed = False
 
     if ui_needed and (backend_needed or data_needed):
         kind = "full_stack"

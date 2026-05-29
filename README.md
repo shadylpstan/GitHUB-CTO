@@ -56,6 +56,8 @@ AIDER_MODEL=gpt-4.1-mini
 AIDER_TIMEOUT=600
 AIDER_TEST_COMMAND=
 AIDER_KEEP_RUNS=5
+AIDER_REVIEW_MAX_ATTEMPTS=2
+AIDER_REVIEW_TIMEOUT=60
 ```
 
 The GitHub token needs repository contents write access and pull request access. For private repositories, use a fine-grained token scoped to the target repository.
@@ -121,6 +123,8 @@ The index intentionally skips noisy/generated files such as `__pycache__`, `node
 - `Deep Proposal`: Codex skips the edit-plan narrowing step and patches the selected files directly.
 - `Iterative Agent Run`: Codex makes one small edit step at a time, applies each step to an agent workspace, optionally runs `AGENT_TEST_COMMAND` in a temporary copy, and stops at a final review checkpoint.
 - `Aider Run`: Flask runs the Aider CLI in an isolated temporary git workspace, captures the resulting file changes, and shows them in the normal proposal review UI.
+
+Aider proposals pass through deterministic validators and a reviewer agent before they are shown. If validation or review fails, Flask retries Aider with structured feedback up to `AIDER_REVIEW_MAX_ATTEMPTS`.
 
 The app logs proposal mode, selected files, planned files, context files, and generated changes to `instance/github_cto.log`.
 

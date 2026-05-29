@@ -10,7 +10,7 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, ses
 from .agent_loop import AgentLoopConfig, IterativeAgentLoop
 from .aider_backend import AiderBackend, AiderConfig, AiderRunError
 from .aider_jobs import AiderJobRegistry
-from .ai import CodexEngineeringManager, CodexTimeout, CodexTransientError
+from .ai import CodexEngineeringManager, CodexTimeout, CodexTransientError, PatchReviewAgent
 from .config import Config
 from .github_client import GitHubClient, GitHubError
 from .index_jobs import IndexJobRegistry
@@ -646,21 +646,59 @@ def _run_aider_job(
                     keep_runs=app.config["AIDER_KEEP_RUNS"],
                 ),
             )
-            result = backend.run_issue(
-                issue=issue,
-                comments=comments,
-                selected_files=selected_files,
-                openai_api_key=app.config["OPENAI_API_KEY"],
-                github_token=token,
-                repository=repo_name,
-                branch=read_branch,
-                progress=progress,
+            reviewer = PatchReviewAgent(
+                app.config["OPENAI_API_KEY"],
+                app.config["OPENAI_MODEL"],
+                timeout=app.config["AIDER_REVIEW_TIMEOUT"],
+                max_retries=app.config["OPENAI_MAX_RETRIES"],
             )
-            proposal = _proposal_from_aider_result(workflow, issue, triage, result, read_branch, target_branch)
-            progress("Validating generated changes.")
-            validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
-            if validation_warnings:
-                proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
+            max_attempts = max(1, app.config["AIDER_REVIEW_MAX_ATTEMPTS"])
+            reviewer_feedback = ""
+            proposal = None
+            last_failure = ""
+            for attempt in range(1, max_attempts + 1):
+                if attempt > 1:
+                    progress(f"Retrying Aider with review feedback (attempt {attempt}/{max_attempts}).")
+                result = backend.run_issue(
+                    issue=issue,
+                    comments=comments,
+                    selected_files=selected_files,
+                    openai_api_key=app.config["OPENAI_API_KEY"],
+                    github_token=token,
+                    repository=repo_name,
+                    branch=read_branch,
+                    reviewer_feedback=reviewer_feedback,
+                    attempt=attempt,
+                    progress=progress,
+                )
+                proposal = _proposal_from_aider_result(workflow, issue, triage, result, read_branch, target_branch)
+                progress("Validating generated changes.")
+                try:
+                    validation_warnings = validate_proposal_changes(app, proposal.get("changes", []))
+                except ProposalValidationError as exc:
+                    last_failure = f"Deterministic validation failed:\n{exc}"
+                    progress(last_failure)
+                    reviewer_feedback = _retry_feedback_from_validation(last_failure)
+                    if attempt >= max_attempts:
+                        raise
+                    continue
+                if validation_warnings:
+                    proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
+
+                progress("Reviewing generated changes against the issue.")
+                review = reviewer.review(issue, proposal.get("changes", []))
+                proposal.setdefault("patch", {})["reviewer"] = review
+                if (review.get("verdict") or "").lower() == "pass":
+                    progress("Reviewer agent passed the generated changes.")
+                    break
+                last_failure = _review_failure_text(review)
+                progress(last_failure)
+                reviewer_feedback = review.get("retry_prompt") or last_failure
+                if attempt >= max_attempts:
+                    raise AiderRunError(last_failure)
+
+            if proposal is None:
+                raise AiderRunError(last_failure or "Aider review loop did not produce a proposal.")
             proposal_id = ProposalStore(app.instance_path + "/proposals").save(proposal)
             progress(f"Aider proposal ready: {proposal_id}.")
             aider_jobs.update(
@@ -741,6 +779,31 @@ def _proposal_from_aider_result(
             "timeline": codex_timeline_for_aider(len(changes), result.get("run_id", "")),
         },
     }
+
+
+def _retry_feedback_from_validation(message: str) -> str:
+    return (
+        "Your previous patch failed deterministic validation. Revise the patch to fix these issues without "
+        "adding unrelated changes:\n"
+        f"{message}"
+    )
+
+
+def _review_failure_text(review: dict) -> str:
+    findings = review.get("findings") or []
+    lines = ["Reviewer agent rejected the patch."]
+    for finding in findings[:6]:
+        if isinstance(finding, dict):
+            lines.append(
+                "- "
+                f"{finding.get('severity', 'issue')} "
+                f"{finding.get('file', '')}: "
+                f"{finding.get('issue', '')} "
+                f"Suggestion: {finding.get('suggestion', '')}".strip()
+            )
+    if review.get("retry_prompt"):
+        lines.append(f"Retry guidance: {review.get('retry_prompt')}")
+    return "\n".join(lines)
 
 
 def codex_timeline_for_aider(changed_files: int, run_id: str) -> list[dict[str, str]]:
