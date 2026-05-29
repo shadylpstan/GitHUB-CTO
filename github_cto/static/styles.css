@@ -353,6 +353,31 @@ textarea {
   width: 100%;
 }
 
+.field-label {
+  color: var(--muted);
+  display: block;
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.code-editor-field {
+  display: grid;
+  gap: 10px;
+}
+
+.code-editor-shell {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  height: min(68vh, 620px);
+  min-height: 360px;
+  overflow: hidden;
+}
+
+.code-editor-source[hidden] {
+  display: none;
+}
+
 button.primary {
   background: var(--black);
   border: 0;

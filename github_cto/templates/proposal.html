@@ -148,10 +148,24 @@
           {% endfor %}
         </div>
 
-        <label>
-          <span>Edit final file content</span>
-          <textarea name="content_{{ loop.index0 }}" rows="18" spellcheck="false">{{ change.proposed_content }}</textarea>
-        </label>
+        <div class="code-editor-field">
+          <div class="field-label">Edit final file content</div>
+          <textarea
+            name="content_{{ loop.index0 }}"
+            class="code-editor-source"
+            data-editor-source="proposal-editor-{{ loop.index0 }}"
+            data-path="{{ change.path }}"
+            rows="18"
+            spellcheck="false"
+          >{{ change.proposed_content }}</textarea>
+          <div
+            class="code-editor-shell"
+            data-editor-host="proposal-editor-{{ loop.index0 }}"
+            data-path="{{ change.path }}"
+            aria-label="Code editor for {{ change.path }}"
+            hidden
+          ></div>
+        </div>
         {% if proposal.codex and proposal.codex.agent == "Aider CLI Backend" %}
           <!-- Move the retry-file form outside the main review form to avoid nested forms -->
         {% endif %}
@@ -179,4 +193,89 @@
       </form>
     {% endif %}
   {% endfor %}
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs/loader.min.js"></script>
+  <script>
+    (() => {
+      const reviewForm = document.getElementById("review-proposal-form");
+      const sources = Array.from(document.querySelectorAll("[data-editor-source]"));
+      const editors = new Map();
+
+      const languageForPath = (path) => {
+        const lowerPath = path.toLowerCase();
+        if (lowerPath.endsWith(".py")) return "python";
+        if (lowerPath.endsWith(".html") || lowerPath.endsWith(".jinja") || lowerPath.endsWith(".j2")) return "html";
+        if (lowerPath.endsWith(".css")) return "css";
+        if (lowerPath.endsWith(".js") || lowerPath.endsWith(".mjs") || lowerPath.endsWith(".cjs")) return "javascript";
+        if (lowerPath.endsWith(".json")) return "json";
+        if (lowerPath.endsWith(".md")) return "markdown";
+        if (lowerPath.endsWith(".yml") || lowerPath.endsWith(".yaml")) return "yaml";
+        if (lowerPath.endsWith(".java")) return "java";
+        if (lowerPath.endsWith(".toml") || lowerPath.endsWith(".ini") || lowerPath.endsWith(".env")) return "ini";
+        return "plaintext";
+      };
+
+      const showTextareaFallback = () => {
+        sources.forEach((source) => {
+          const host = document.querySelector(`[data-editor-host="${source.dataset.editorSource}"]`);
+          source.hidden = false;
+          if (host) host.hidden = true;
+        });
+      };
+
+      const syncEditors = () => {
+        editors.forEach((editor, source) => {
+          source.value = editor.getValue();
+        });
+      };
+
+      const loadMonaco = () => {
+        if (!window.require || !sources.length) {
+          showTextareaFallback();
+          return;
+        }
+
+        window.require.config({
+          paths: {
+            vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs"
+          }
+        });
+
+        window.require(
+          ["vs/editor/editor.main"],
+          () => {
+            sources.forEach((source) => {
+              const host = document.querySelector(`[data-editor-host="${source.dataset.editorSource}"]`);
+              if (!host) return;
+              source.hidden = true;
+              host.hidden = false;
+              const editor = monaco.editor.create(host, {
+                value: source.value,
+                language: languageForPath(source.dataset.path || ""),
+                theme: "vs-dark",
+                automaticLayout: true,
+                fontSize: 13,
+                insertSpaces: true,
+                minimap: { enabled: false },
+                renderWhitespace: "selection",
+                scrollBeyondLastLine: false,
+                tabSize: 4,
+                wordWrap: "off"
+              });
+              editors.set(source, editor);
+            });
+          },
+          showTextareaFallback
+        );
+      };
+
+      if (reviewForm) {
+        reviewForm.addEventListener("submit", syncEditors, { capture: true });
+      }
+
+      window.setTimeout(() => {
+        if (!editors.size) showTextareaFallback();
+      }, 4000);
+      loadMonaco();
+    })();
+  </script>
 {% endblock %}
