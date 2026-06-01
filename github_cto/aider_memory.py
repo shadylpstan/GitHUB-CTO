@@ -78,6 +78,13 @@ def _lesson_tags(issue: dict[str, Any], files: list[str], lesson: str) -> list[s
         "route",
         "validation",
         "css",
+        "index",
+        "rebuild",
+        "repo_index",
+        "aider",
+        "pr",
+        "branch",
+        "token",
     ]:
         if tag in text:
             tags.append(tag)

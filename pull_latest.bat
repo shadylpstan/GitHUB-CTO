@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 echo.
-echo === GitHub CTO: pull latest code ===
+echo === DevFlow CTO: pull latest code ===
 echo Repo: %CD%
 echo.
 

@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Dashboard | GitHub CTO{% endblock %}
+{% block title %}Dashboard | DevFlow CTO{% endblock %}
 
 {% block content %}
   <section class="dashboard-head">
     <div>
-      <p class="eyebrow">Codex connected as {{ user.login }}</p>
+      <p class="eyebrow">DevFlow CTO connected as {{ user.login }}</p>
       <h1>Engineering queue</h1>
       <p class="lede">
-        Codex is watching GitHub issues, scoring urgency, and preparing reviewable issue-to-PR runs.
+        DevFlow CTO is watching work items, scoring urgency, and preparing reviewable issue-to-PR runs.
       </p>
       <div class="repo-meta">
         <span>{{ repo.private and "Private repository" or "Public repository" }}</span>
@@ -50,7 +50,7 @@
       <p class="eyebrow">Semantic repository memory</p>
       <h2>Vector index</h2>
       <p>
-        Codex uses this local index to find relevant files and code chunks on {{ branch_settings.read_branch }} before reading full files.
+        DevFlow CTO uses this local index to find relevant files and code chunks on {{ branch_settings.read_branch }} before reading full files.
       </p>
     </div>
     <div class="index-stats">

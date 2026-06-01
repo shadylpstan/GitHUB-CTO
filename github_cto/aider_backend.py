@@ -31,6 +31,8 @@ class AiderConfig:
     timeout: int = 600
     test_command: str = ""
     keep_runs: int = 5
+    map_tokens: int = 1024
+    max_input_tokens: int = 24000
 
 
 class AiderBackend:
@@ -71,10 +73,10 @@ class AiderBackend:
             self._progress(progress, "Cloned repository into isolated workspace.")
             logger.info("Aider initializing workspace git repo run_id=%s", run_id)
             self._baseline_git_repo(workspace)
-            prompt_path.write_text(
-                self._prompt(issue, comments, selected_files, reviewer_feedback, implementation_plan, evidence),
-                encoding="utf-8",
-            )
+            prompt_text = self._prompt(issue, comments, selected_files, reviewer_feedback, implementation_plan, evidence)
+            selected_files = self._fit_files_to_input_budget(workspace, selected_files, prompt_text, progress)
+            prompt_text = self._prompt(issue, comments, selected_files, reviewer_feedback, implementation_plan, evidence)
+            prompt_path.write_text(prompt_text, encoding="utf-8")
             self._progress(progress, f"Starting Aider attempt {attempt} with {len(selected_files)} selected file(s).")
             logger.info("Aider subprocess starting run_id=%s files=%s", run_id, selected_files)
             output = self._run_aider(workspace, prompt_path, selected_files, openai_api_key, progress)
@@ -175,6 +177,8 @@ class AiderBackend:
             "--no-fancy-input",
             "--no-stream",
             "--no-auto-lint",
+            "--map-tokens",
+            str(max(0, self.config.map_tokens)),
             *selected_files,
         ]
         env = os.environ.copy()
@@ -255,6 +259,7 @@ class AiderBackend:
                 break
 
         output = "".join(output_parts)
+        oversize_error = _oversize_rate_limit_message(output)
         if process.returncode != 0:
             changes = self._changed_files(workspace)
             if changes:
@@ -263,8 +268,73 @@ class AiderBackend:
                     process.returncode,
                 )
                 return output[-12000:] + f"\n\nAider exited with code {process.returncode} after applying edits. Review carefully."
+            if oversize_error:
+                raise AiderRunError(oversize_error)
             raise AiderRunError(f"Aider failed with exit code {process.returncode}:\n{output[-5000:]}")
+        if oversize_error:
+            raise AiderRunError(oversize_error)
         return output[-12000:]
+
+    def _fit_files_to_input_budget(
+        self,
+        workspace: Path,
+        selected_files: list[str],
+        prompt_text: str,
+        progress: ProgressCallback | None,
+    ) -> list[str]:
+        max_tokens = max(8000, self.config.max_input_tokens)
+        fixed_tokens = _estimate_tokens(prompt_text) + max(0, self.config.map_tokens) + 2500
+        kept: list[str] = []
+        skipped: list[tuple[str, int]] = []
+        used = fixed_tokens
+
+        for path in selected_files:
+            file_tokens = self._estimate_file_tokens(workspace, path)
+            if kept and used + file_tokens > max_tokens:
+                skipped.append((path, file_tokens))
+                continue
+            kept.append(path)
+            used += file_tokens
+
+        if not kept and selected_files:
+            first = selected_files[0]
+            kept = [first]
+            skipped = [(path, self._estimate_file_tokens(workspace, path)) for path in selected_files[1:]]
+            used = fixed_tokens + self._estimate_file_tokens(workspace, first)
+
+        if skipped:
+            skipped_text = ", ".join(f"{path} (~{tokens} tokens)" for path, tokens in skipped[:6])
+            if len(skipped) > 6:
+                skipped_text += f", and {len(skipped) - 6} more"
+            message = (
+                f"Reduced Aider context from {len(selected_files)} to {len(kept)} file(s) to stay under "
+                f"the configured token budget ({used}/{max_tokens} estimated tokens). Skipped: {skipped_text}."
+            )
+            self._progress(progress, message)
+            logger.warning("Aider selected files trimmed for token budget: %s", message)
+        else:
+            self._progress(progress, f"Aider context estimate: {used}/{max_tokens} tokens.")
+
+        if used > max_tokens:
+            raise AiderRunError(
+                "The selected Aider context is still too large for the configured token budget "
+                f"({used}/{max_tokens} estimated tokens). Select fewer or smaller files, or increase "
+                "AIDER_MAX_INPUT_TOKENS if your OpenAI TPM quota allows it."
+            )
+        return kept
+
+    def _estimate_file_tokens(self, workspace: Path, path: str) -> int:
+        file_path = workspace / path
+        if not file_path.exists() or not file_path.is_file():
+            return 300
+        try:
+            size = file_path.stat().st_size
+            if size > 1_000_000:
+                return size // 3
+            text = file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return 300
+        return _estimate_tokens(text) + 80
 
     def _run_tests(self, workspace: Path) -> str:
         completed = subprocess.run(
@@ -321,13 +391,19 @@ class AiderBackend:
         )
         files = "\n".join(f"- {path}" for path in selected_files) or "- Let Aider choose files from the repo map."
         plan_text = _format_json_block(implementation_plan or {})
+        required_files = implementation_plan.get("required_owner_files") if isinstance(implementation_plan, dict) else []
+        acceptance = implementation_plan.get("acceptance_criteria") if isinstance(implementation_plan, dict) else []
+        required_text = "\n".join(f"- {path}" for path in (required_files or [])) or "- None."
+        acceptance_text = "\n".join(f"- {item}" for item in (acceptance or [])) or "- Make the smallest correct change for the issue."
         evidence_text = _format_json_block(evidence or {})
         return (
             f"Fix GitHub issue #{issue.get('number')}: {issue.get('title')}\n\n"
             f"Issue body:\n{issue.get('body') or 'No issue body provided.'}\n\n"
             f"Recent comments:\n{comment_text or 'No comments.'}\n\n"
-            f"Files selected by GitHub CTO:\n{files}\n\n"
+            f"Files selected by DevFlow CTO:\n{files}\n\n"
             f"Pre-edit implementation plan from the planner agent:\n{plan_text}\n\n"
+            f"Required owner files contract:\n{required_text}\n\n"
+            f"Acceptance criteria contract:\n{acceptance_text}\n\n"
             f"Evidence gathered before editing:\n{evidence_text}\n\n"
             + (f"Previous review feedback to fix in this retry:\n{reviewer_feedback}\n\n" if reviewer_feedback else "")
             +
@@ -338,6 +414,7 @@ class AiderBackend:
             "Edit hygiene rules:\n"
             "- Use the selected files as the primary edit context. Make the requested issue change across selected files when they are relevant.\n"
             "- Follow the pre-edit implementation plan unless the selected file contents clearly prove it is wrong. If you deviate, explain why in your output.\n"
+            "- Treat required owner files and acceptance criteria as a contract. Edit at least one required owner file unless the file already fully satisfies the issue, and explain that explicitly in your output.\n"
             "- Prefer one small root-cause fix over broad cleanup. Do not make cosmetic changes unrelated to the issue.\n"
             "- For UI state changes, identify the single existing owner of that state before editing. If a poll loop or render function already sets disabled/hidden/text/progress, update that owner instead of adding a separate handler that can be overwritten.\n"
             "- If multiple handlers currently write the same UI state, consolidate through a shared state variable or render function. Do not leave competing writers.\n"
@@ -413,7 +490,26 @@ def _format_json_block(value: dict[str, Any]) -> str:
         text = json.dumps(value, indent=2, ensure_ascii=False)
     except TypeError:
         text = str(value)
-    return text[:30000]
+    return text[:12000]
+
+
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
+def _oversize_rate_limit_message(output: str) -> str:
+    lowered = (output or "").lower()
+    if "request too large" not in lowered and "tokens per min" not in lowered and "tpm" not in lowered:
+        return ""
+    if "request too large" not in lowered:
+        return ""
+    return (
+        "Aider could not start because the selected context is too large for the OpenAI tokens-per-minute quota. "
+        "DevFlow CTO now trims selected files automatically, but this run still exceeded the provider limit. "
+        "Retry with fewer selected files, lower AIDER_MAX_INPUT_TOKENS, or use a model/quota with a higher TPM limit."
+    )
 
 
 def _visible_aider_log_line(line: str, suppressing_code_output: bool) -> tuple[str, bool]:

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Aider Run | GitHub CTO{% endblock %}
+{% block title %}Aider Run | DevFlow CTO{% endblock %}
 
 {% block content %}
   <section class="issue-hero">
@@ -78,7 +78,7 @@
           if (!completionShown) {
             completionShown = true;
             actions.scrollIntoView({ behavior: "smooth", block: "center" });
-            document.title = "Aider Finished | GitHub CTO";
+            document.title = "Aider Finished | DevFlow CTO";
           }
         } else if (payload.state === "error") {
           heading.textContent = "Aider failed";
@@ -87,7 +87,7 @@
           if (!completionShown) {
             completionShown = true;
             actions.scrollIntoView({ behavior: "smooth", block: "center" });
-            document.title = "Aider Failed | GitHub CTO";
+            document.title = "Aider Failed | DevFlow CTO";
           }
         } else {
           heading.textContent = "Aider is working";

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}GitHub CTO{% endblock %}</title>
+    <title>{% block title %}DevFlow CTO{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
   <body>
@@ -11,8 +11,8 @@
       <a class="brand" href="{{ url_for('dashboard') if configured_repo and has_github_token else url_for('index') }}">
         <span class="brand-mark">CTO</span>
         <span>
-          <strong>GitHub CTO</strong>
-          <small>Codex-native Engineering Manager</small>
+          <strong>DevFlow CTO</strong>
+          <small>Repo-aware Engineering Manager</small>
         </span>
       </a>
       <nav>

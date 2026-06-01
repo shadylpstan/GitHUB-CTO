@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 echo.
-echo === GitHub CTO: push current changes ===
+echo === DevFlow CTO: push current changes ===
 echo.
 
 git rev-parse --is-inside-work-tree >nul 2>&1
@@ -69,7 +69,7 @@ if not errorlevel 1 (
 
 for /f "tokens=1-4 delims=/ " %%a in ("%date%") do set DATE_PART=%%d-%%b-%%c
 for /f "tokens=1-2 delims=.:" %%a in ("%time%") do set TIME_PART=%%a%%b
-set COMMIT_MSG=Update GitHub CTO app %DATE_PART% %TIME_PART%
+set COMMIT_MSG=Update DevFlow CTO app %DATE_PART% %TIME_PART%
 
 git commit -m "%COMMIT_MSG%"
 if errorlevel 1 (

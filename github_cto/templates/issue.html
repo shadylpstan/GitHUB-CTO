@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Issue #{{ issue.number }} | GitHub CTO{% endblock %}
+{% block title %}Issue #{{ issue.number }} | DevFlow CTO{% endblock %}
 
 {% block content %}
   <section class="issue-hero">
@@ -73,6 +73,14 @@
           <span>{{ plan.root_cause_justification }}</span>
         </div>
       {% endif %}
+      {% if plan.required_owner_files %}
+        <div class="context-note">
+          <strong>Required owner files</strong>
+          {% for owner_file in plan.required_owner_files %}
+            <span>{{ owner_file }}{% if plan.owner_file_reasons and plan.owner_file_reasons.get(owner_file) %}: {{ plan.owner_file_reasons.get(owner_file) }}{% endif %}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
       {% if plan.evidence %}
         <div class="context-note">
           <strong>Evidence-ranked files</strong>
@@ -94,7 +102,7 @@
           {% endfor %}
         </ol>
       {% endif %}
-      <form method="post" action="{{ url_for('generate_proposal', issue_number=issue.number) }}" class="file-plan" data-loading="Codex is generating a proposal...">
+      <form method="post" action="{{ url_for('generate_proposal', issue_number=issue.number) }}" class="file-plan" data-loading="DevFlow CTO is generating a proposal...">
         <input type="hidden" name="read_branch" value="{{ branch_settings.read_branch }}">
         <input type="hidden" name="target_branch" value="{{ branch_settings.target_branch }}">
         {% for file in plan.files %}

@@ -1,1 +1,1 @@
-"""GitHub CTO Flask application package."""
+"""DevFlow CTO Flask application package."""

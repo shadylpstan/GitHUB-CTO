@@ -1,6 +1,6 @@
 # Codex-Native Architecture
 
-GitHub CTO is built around a Codex-style autonomous engineering loop. The Flask app is the command center; the Codex Engineering Manager is the reasoning layer; GitHub is the execution surface.
+DevFlow CTO is built around a Codex-style autonomous engineering loop. The Flask app is the command center; the DevFlow CTO Engineering Manager is the reasoning layer; GitHub is the current execution connector.
 
 ## Runtime Flow
 

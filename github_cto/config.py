@@ -36,6 +36,8 @@ class Config:
     AIDER_TIMEOUT = int(os.getenv("AIDER_TIMEOUT", "600"))
     AIDER_TEST_COMMAND = os.getenv("AIDER_TEST_COMMAND", "")
     AIDER_KEEP_RUNS = int(os.getenv("AIDER_KEEP_RUNS", "5"))
+    AIDER_MAP_TOKENS = int(os.getenv("AIDER_MAP_TOKENS", "1024"))
+    AIDER_MAX_INPUT_TOKENS = int(os.getenv("AIDER_MAX_INPUT_TOKENS", "24000"))
     AIDER_PLANNING_TIMEOUT = int(os.getenv("AIDER_PLANNING_TIMEOUT", "60"))
     AIDER_REVIEW_MAX_ATTEMPTS = int(os.getenv("AIDER_REVIEW_MAX_ATTEMPTS", "2"))
     AIDER_REVIEW_TIMEOUT = int(os.getenv("AIDER_REVIEW_TIMEOUT", "60"))

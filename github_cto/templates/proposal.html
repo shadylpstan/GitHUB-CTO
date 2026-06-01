@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Review Proposal | GitHub CTO{% endblock %}
+{% block title %}Review Proposal | DevFlow CTO{% endblock %}
 
 {% block content %}
   <section class="issue-hero">
     <div>
-      <p class="eyebrow">{{ proposal.codex.agent if proposal.codex else "Codex Engineering Manager" }}</p>
+      <p class="eyebrow">{{ proposal.codex.agent if proposal.codex else "DevFlow CTO Engineering Manager" }}</p>
       <h1>Review proposed changes</h1>
       <a class="external" href="{{ proposal.issue.html_url }}">Issue #{{ proposal.issue.number }}: {{ proposal.issue.title }}</a>
     </div>
@@ -221,7 +221,7 @@
     <section class="sticky-actions">
       <div>
         <strong>{{ proposal.changes|length }} file change{{ '' if proposal.changes|length == 1 else 's' }} ready</strong>
-        <span>Codex has proposed the patch. GitHub is untouched until you approve.</span>
+        <span>DevFlow CTO has proposed the patch. The repository is untouched until you approve.</span>
       </div>
       <button class="primary" type="submit"><span class="button-label">Approve Codex Run And Create PR</span></button>
     </section>

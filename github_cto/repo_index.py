@@ -86,7 +86,9 @@ class OpenAIFileSummarizer:
                                 "Summarize code file responsibility for repository search. "
                                 "Return JSON with keys summary and keywords. "
                                 "summary must be one concise sentence about what behavior this file owns. "
-                                "keywords must be 5-12 short phrases grounded in the code. Do not invent behavior."
+                                "keywords must be 8-16 short phrases grounded in the code, including issue routing hints "
+                                "such as 'select for index rebuild' or 'select for PR creation' when supported by the code. "
+                                "Do not invent behavior."
                             ),
                         },
                         {
@@ -465,6 +467,16 @@ class RepositoryIndex:
                 score += 0.22
             if "job" in terms and ("job" in text or "aider" in text):
                 score += 0.20
+            if "issue routing hints:" in text and exact_hits:
+                score += 0.35
+            if "owned behavior:" in text and exact_hits:
+                score += 0.25
+            if any(term in terms for term in ["index", "rebuild", "chunks", "pycache", "node_modules"]) and "repository index rebuild" in text:
+                score += 1.0
+            if any(term in terms for term in ["approve", "proposal", "pr", "pull"]) and "proposal review ui" in text:
+                score += 0.7
+            if any(term in terms for term in ["aider", "token", "prompt"]) and "aider cli execution" in text:
+                score += 0.7
             if score > 0:
                 scored.append({"path": row["path"], "score": score, "reason": f"metadata matched {len(exact_hits)} issue term(s)"})
         scored.sort(key=lambda item: item["score"], reverse=True)
@@ -602,13 +614,81 @@ def _language_for_path(path: str) -> str:
 
 def extract_file_facts(path: str, content: str) -> str:
     normalized = path.replace("\\", "/").lower()
+    ownership = _ownership_facts(path, content)
     if normalized.endswith(".py"):
-        return _python_facts(content)
-    if normalized.endswith((".html", ".jinja", ".j2")):
-        return _template_facts(content)
-    if normalized.endswith((".js", ".jsx", ".ts", ".tsx")):
-        return _script_facts(content)
-    return _generic_facts(content)
+        facts = _python_facts(content)
+    elif normalized.endswith((".html", ".jinja", ".j2")):
+        facts = _template_facts(content)
+    elif normalized.endswith((".js", ".jsx", ".ts", ".tsx")):
+        facts = _script_facts(content)
+    else:
+        facts = _generic_facts(content)
+    return "\n".join(item for item in [ownership, facts] if item)
+
+
+def _ownership_facts(path: str, content: str) -> str:
+    normalized = path.replace("\\", "/").lower()
+    text = f"{normalized}\n{content[:60000]}".lower()
+    owns: list[str] = []
+    route_when: list[str] = []
+    related: list[str] = []
+
+    if normalized.endswith("repo_index.py") or "class repositoryindex" in text:
+        owns.extend([
+            "repository index rebuild",
+            "file indexing inclusion and exclusion",
+            "chunk creation",
+            "file responsibility metadata",
+            "semantic repository memory search",
+        ])
+        route_when.extend([
+            "rebuild index",
+            "indexed files",
+            "exclude files from index",
+            "pycache node_modules env files",
+            "vector index chunks metadata",
+        ])
+        related.extend(["github_cto/index_jobs.py", "github_cto/templates/dashboard.html"])
+    if normalized.endswith("index_jobs.py"):
+        owns.extend(["index rebuild job state", "index progress tracking", "index completion status"])
+        route_when.extend(["rebuild index progress", "index job running complete error", "index notification"])
+        related.extend(["github_cto/repo_index.py", "github_cto/templates/dashboard.html"])
+    if normalized.endswith("templates/dashboard.html"):
+        owns.extend(["dashboard UI", "index rebuild controls", "index progress polling", "indexed files tree"])
+        route_when.extend(["dashboard", "home screen", "rebuild index button", "delete index button", "index completion message"])
+        related.extend(["github_cto/app.py", "github_cto/index_jobs.py", "github_cto/repo_index.py"])
+    if normalized.endswith("app.py"):
+        owns.extend(["Flask routes", "request/session orchestration", "Aider job launch", "proposal approval endpoints"])
+        route_when.extend(["route", "endpoint", "session", "Aider run", "approve PR", "branch settings"])
+    if normalized.endswith("workflow.py"):
+        owns.extend(["issue planning workflow", "file selection", "proposal generation", "PR creation"])
+        route_when.extend(["file ranking", "selected files", "create PR", "proposal workflow", "issue planning"])
+    if normalized.endswith("aider_backend.py"):
+        owns.extend(["Aider CLI execution", "isolated workspace clone", "Aider prompt", "captured git diff"])
+        route_when.extend(["Aider failed", "Aider prompt", "Aider selected files", "Aider token budget"])
+    if normalized.endswith("aider_jobs.py"):
+        owns.extend(["Aider async job registry", "Aider job status JSON"])
+        route_when.extend(["Aider status page", "Aider job logs", "Aider running complete error"])
+    if normalized.endswith("templates/proposal.html"):
+        owns.extend(["proposal review UI", "diff editing UI", "approve PR form", "retry file controls"])
+        route_when.extend(["review proposal screen", "approve create PR button", "Aider output", "diff editor"])
+    if normalized.endswith("templates/aider_job.html"):
+        owns.extend(["Aider live status UI", "Aider run logs", "Review Proposal navigation"])
+        route_when.extend(["Aider job page", "live logs", "Aider finished failed"])
+    if normalized.endswith("github_client.py"):
+        owns.extend(["GitHub REST connector", "repository file operations", "branch and pull request API calls"])
+        route_when.extend(["GitHub API", "create branch", "create pull request", "file commit"])
+
+    if not owns and not route_when:
+        return ""
+    lines = []
+    if owns:
+        lines.append("owned behavior: " + ", ".join(_unique(owns)))
+    if route_when:
+        lines.append("issue routing hints: select for " + ", ".join(_unique(route_when)))
+    if related:
+        lines.append("related files: " + ", ".join(_unique(related)))
+    return "\n".join(lines)
 
 
 def _python_facts(content: str) -> str:
@@ -817,11 +897,9 @@ SKIP_PARTS = {
     ".git",
     ".venv",
     "venv",
-    "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
-    "node_modules",
     "dist",
     "build",
     "vendor",

@@ -9,7 +9,7 @@ from .evidence import evidence_rank
 from .github_client import GitHubClient, is_probably_text_file
 from .intent import architectural_rank, classify_issue_intent, classify_issue_scope, file_scope
 from .patch_utils import PatchApplyError, apply_unified_diff
-from .repo_index import RepositoryIndex
+from .repo_index import RepositoryIndex, should_index_path
 from .triage import triage_issue
 
 
@@ -73,6 +73,16 @@ def _priority_score(path: str, priorities: list[str]) -> int:
     return 0
 
 
+def _prepend_unique(required: list[str], paths: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for path in [*required, *paths]:
+        if path and path not in seen:
+            result.append(path)
+            seen.add(path)
+    return result
+
+
 def safe_branch_name(issue_number: int, title: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")[:48] or "issue"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -107,7 +117,7 @@ def codex_timeline(stage: str, **extra: Any) -> list[dict[str, str]]:
         ("context", "Select code context", "Codex chooses files to inspect before proposing changes."),
         ("patch", "Generate proposal", "Codex drafts modified and new files as a reviewable patch."),
         ("review", "Human checkpoint", "You inspect diffs and edit the proposed files before execution."),
-        ("execute", "GitHub execution", "After approval, the app creates a branch, commits, opens a PR, and comments."),
+        ("execute", "Repository execution", "After approval, the app creates a branch, commits, opens a PR, and comments."),
     ]
     completed_order = {name: index for index, (name, _, _) in enumerate(stages)}
     current_index = completed_order.get(stage, 0)
@@ -161,7 +171,9 @@ class GitHubCTOWorkflow:
         paths = [
             item["path"]
             for item in tree
-            if item.get("type") == "blob" and is_probably_text_file(item.get("path", ""))
+            if item.get("type") == "blob"
+            and is_probably_text_file(item.get("path", ""))
+            and should_index_path(item.get("path", ""))
         ]
         ignored = (".lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "dist/", "build/", "vendor/")
         filtered = [path for path in paths if not any(part in path for part in ignored)]
@@ -176,7 +188,9 @@ class GitHubCTOWorkflow:
         base_files = indexed_files or self.candidate_files(branch)
         evidence_hits = self._evidence_hits(issue, base_files, branch)
         evidence_scores = {hit.path: hit.score for hit in evidence_hits}
+        owner_plan = self.required_owner_files(issue, base_files, branch)
         files = architectural_rank(base_files, intent, evidence_scores=evidence_scores)
+        files = _prepend_unique(owner_plan["files"], files)
         files = self._balance_scope_candidates(files, scope)
         files = self._ensure_ui_candidates(issue, files, base_files)
         context_source = "vector_index" if indexed_files else "repo_tree"
@@ -190,6 +204,8 @@ class GitHubCTOWorkflow:
                 "intent": intent,
                 "scope": scope,
                 "evidence": evidence_hits[:8],
+                "required_owner_files": owner_plan["files"],
+                "owner_file_reasons": owner_plan["reasons"],
                 "ai_enabled": False,
                 "timeline": codex_timeline(
                     "context",
@@ -208,6 +224,7 @@ class GitHubCTOWorkflow:
             evidence=[hit.__dict__ for hit in evidence_hits],
         )
         selected = [path for path in plan.get("files", []) if path in files]
+        selected = _prepend_unique(owner_plan["files"], selected)
         selected = self._balance_scope_candidates(selected, scope, fallback=files)
         selected = self._ensure_ui_candidates(issue, selected, files)
         visible_files = selected[: self.max_selected_files]
@@ -219,6 +236,8 @@ class GitHubCTOWorkflow:
             "intent": intent,
             "scope": scope,
             "evidence": evidence_hits[:8],
+            "required_owner_files": owner_plan["files"],
+            "owner_file_reasons": owner_plan["reasons"],
             "ai_enabled": True,
             "timeline": codex_timeline(
                 "context",
@@ -230,6 +249,48 @@ class GitHubCTOWorkflow:
                 evidence_hits=len(evidence_hits),
             ),
         }
+
+    def required_owner_files(self, issue: dict[str, Any], candidates: list[str], branch: str) -> dict[str, Any]:
+        issue_text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}".lower()
+        candidate_set = set(candidates)
+        required: list[str] = []
+        reasons: dict[str, str] = {}
+
+        def require(path: str, reason: str) -> None:
+            if path in candidate_set and path not in required:
+                required.append(path)
+                reasons[path] = reason
+
+        if any(term in issue_text for term in ["rebuild index", "rebuilding index", "vector index", "indexed files", "repository index", "semantic repository memory", "chunk", "chunks"]):
+            require("github_cto/repo_index.py", "Owns repository index rebuild, file inclusion/exclusion, metadata, and chunk creation.")
+            if any(term in issue_text for term in ["progress", "finished", "complete", "notification", "message", "button", "delete index", "rebuild button"]):
+                require("github_cto/index_jobs.py", "Owns index job state and progress.")
+                require("github_cto/templates/dashboard.html", "Owns dashboard index controls and progress UI.")
+        if any(term in issue_text for term in ["pycache", "__pycache__", "node_modules", "npm folder", ".env", "environment file", "exclude", "skip folder", "ignore folder"]):
+            require("github_cto/repo_index.py", "Owns index file filtering and skipped path rules.")
+        if any(term in issue_text for term in ["approve", "create pr", "pull request button", "review proposal"]):
+            require("github_cto/templates/proposal.html", "Owns proposal review form and approval UI.")
+            require("github_cto/workflow.py", "Owns PR creation from reviewed proposals.")
+        if any(term in issue_text for term in ["aider", "selected files", "token", "rate limit", "prompt"]):
+            require("github_cto/aider_backend.py", "Owns Aider prompt, selected files, token budget, and CLI execution.")
+        if any(term in issue_text for term in ["branch", "read branch", "target branch"]):
+            require("github_cto/app.py", "Owns branch-setting request/session orchestration.")
+            require("github_cto/workflow.py", "Owns branch-aware planning and PR execution.")
+            require("github_cto/aider_backend.py", "Owns cloning the selected read branch for Aider.")
+
+        if self.repo_index:
+            try:
+                metadata_hits = self.repo_index.metadata_search(self.github.repo.full_name, branch, issue_text)
+            except Exception as exc:
+                logger.warning("Could not search metadata for owner files: %s", exc)
+                metadata_hits = []
+            for hit in metadata_hits[:4]:
+                path = hit.get("path")
+                if path in candidate_set and path not in required and hit.get("score", 0) >= 0.65:
+                    required.append(path)
+                    reasons[path] = hit.get("reason", "File responsibility metadata matched issue ownership terms.")
+
+        return {"files": required[:4], "reasons": reasons}
 
     def _indexed_candidate_files(self, issue: dict[str, Any], branch: str) -> list[str]:
         if not self.repo_index:
@@ -479,8 +540,8 @@ class GitHubCTOWorkflow:
             "target_branch": target_branch,
             "changes": changes,
             "codex": {
-                "agent": "Codex Engineering Manager",
-                "mode": "GitHub-only",
+                "agent": "DevFlow CTO Engineering Manager",
+                "mode": "Repository connector",
                 "model": self.planner.model,
                 "timeline": codex_timeline(
                     "review",
@@ -496,7 +557,9 @@ class GitHubCTOWorkflow:
     def _proposal_context_files(self, selected_files: list[str], branch: str) -> list[dict[str, str]]:
         repo = self.github.repo.full_name
         indexed_context: dict[str, list[str]] = {}
+        metadata_text: dict[str, str] = {}
         if self.repo_index:
+            metadata_text = self.repo_index.metadata_text_for_paths(repo, branch, selected_files)
             for chunk in self.repo_index.chunks_for_paths(repo, branch, selected_files, max_chunks_per_file=2):
                 indexed_context.setdefault(chunk["path"], []).append(
                     f"# lines {chunk['start_line']}-{chunk['end_line']}\n{chunk['content']}"
@@ -511,6 +574,8 @@ class GitHubCTOWorkflow:
                 payload["context_mode"] = "full_file_parallel"
                 if self.enable_file_summaries:
                     payload["summary"] = _local_file_summary(path, payload["content"])
+                if metadata_text.get(path):
+                    payload["responsibility_metadata"] = metadata_text[path]
                 if path in indexed_context:
                     payload["indexed_snippets"] = "\n\n".join(indexed_context[path])
                 payloads_by_path[path] = payload
@@ -559,7 +624,7 @@ class GitHubCTOWorkflow:
         self.github.comment_on_issue(
             issue["number"],
             (
-                "GitHub CTO created a reviewed Codex-agent PR.\n\n"
+                "DevFlow CTO created a reviewed agent PR.\n\n"
                 f"- Severity: **{triage['severity']}** ({triage['score']}/100)\n"
                 f"- PR: {pr.get('html_url')}\n"
                 f"- Changed files: {', '.join(committed_paths)}"
@@ -577,7 +642,7 @@ class GitHubCTOWorkflow:
         rationale = "\n".join(f"- {item}" for item in rationale_items)
         changed = "\n".join(f"- `{path}`" for path in committed_paths)
         return (
-            f"## Autonomous GitHub CTO Fix\n\n"
+            f"## DevFlow CTO Fix\n\n"
             f"Closes #{issue.get('number')}.\n\n"
             f"### Triage\n"
             f"- Severity: **{severity}**\n"
@@ -587,5 +652,5 @@ class GitHubCTOWorkflow:
             f"### Summary\n{patch.get('summary', 'No summary provided.')}\n\n"
             f"### Changed Files\n{changed}\n\n"
             f"### Test Plan\n{patch.get('test_plan', 'Review and run the repository test suite.')}\n\n"
-            "_Generated by GitHub CTO._"
+            "_Generated by DevFlow CTO._"
         )

@@ -1,4 +1,4 @@
-# GitHub CTO
+# DevFlow CTO
 
 Codex-native Engineering Manager for GitHub issues. This Flask app connects to a real GitHub repository, runs a Codex-style issue-to-PR workflow, triages open issues, plans relevant file inspection, generates reviewable code changes, creates a branch, commits files, opens a pull request, and comments back on the issue.
 
@@ -7,7 +7,7 @@ Codex-native Engineering Manager for GitHub issues. This Flask app connects to a
 - Real GitHub REST API integration.
 - Server-rendered Flask frontend in the same app.
 - Issue severity scoring with P0/P1/P2/P3 prioritization.
-- Codex run timeline: intake, triage, repo scan, context selection, patch proposal, human review, GitHub execution.
+- DevFlow CTO run timeline: intake, triage, repo scan, context selection, patch proposal, human review, repository execution.
 - Repository file discovery through the GitHub tree API.
 - Local SQLite vector index for semantic code discovery with file path, language, line range, SHA, chunk metadata, and cached file responsibility metadata.
 - Session branch controls for the branch Codex reads/inspects and the branch PRs target.
@@ -56,6 +56,8 @@ AIDER_MODEL=gpt-4.1-mini
 AIDER_TIMEOUT=600
 AIDER_TEST_COMMAND=
 AIDER_KEEP_RUNS=5
+AIDER_MAP_TOKENS=1024
+AIDER_MAX_INPUT_TOKENS=24000
 AIDER_REVIEW_MAX_ATTEMPTS=2
 AIDER_REVIEW_TIMEOUT=60
 ```

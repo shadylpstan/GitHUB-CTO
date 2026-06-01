@@ -395,6 +395,8 @@ class PatchReviewAgent:
                         "Fail only for concrete correctness, safety, validation, or issue-mismatch problems. "
                         "Use the implementation plan and evidence to judge whether the patch fixed the real owning behavior, "
                         "not merely a nearby symptom. "
+                        "If required_owner_files are listed, fail when none of them changed unless the plan clearly says they only need inspection. "
+                        "Check every acceptance_criteria item and fail when a concrete criterion is not satisfied. "
                         "For UI/state issues, explicitly check state ownership: if a polling loop, render function, or route response "
                         "already owns a property such as disabled, hidden, labels, flash messages, or progress state, the patch must "
                         "integrate with that owner instead of adding a second competing handler. "
@@ -461,8 +463,10 @@ class AiderPlanningAgent:
                         "Act like a careful Codex-style engineer: inspect evidence, identify the owning behavior, "
                         "choose the smallest target, and define concrete checks. "
                         "Do not write code. Return JSON only with keys: root_cause_hypothesis, owning_files, "
-                        "edit_strategy, constraints, validation_plan, risk_notes. "
-                        "owning_files must be an array of file paths from the selected files when possible. "
+                        "required_owner_files, acceptance_criteria, edit_strategy, constraints, validation_plan, risk_notes. "
+                        "owning_files and required_owner_files must be arrays of file paths from the selected files when possible. "
+                        "required_owner_files are files that must be changed or explicitly justified as unchanged. "
+                        "acceptance_criteria must be concrete checks that prove the issue is fixed. "
                         "constraints must include things the coding agent must avoid, such as unrelated rewrites. "
                         "For UI/state issues, identify the single owner of the changing state. If the evidence shows polling, "
                         "render functions, or submit handlers all touching the same control, require the edit strategy to unify "
@@ -487,6 +491,11 @@ def _fallback_aider_plan(issue: dict[str, Any], selected_files: list[str], evide
     return {
         "root_cause_hypothesis": "OpenAI planning is disabled. Use selected files and local evidence to make the smallest safe patch.",
         "owning_files": selected_files,
+        "required_owner_files": selected_files[:2],
+        "acceptance_criteria": [
+            "The patch directly addresses the requested behavior.",
+            "Required owner files are changed or explicitly justified as already correct.",
+        ],
         "edit_strategy": "Inspect selected files, modify only the files needed to satisfy the issue, and preserve existing behavior.",
         "constraints": [
             "Avoid unrelated rewrites.",

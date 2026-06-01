@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
@@ -125,6 +126,8 @@ def create_app() -> Flask:
                 timeout=app.config["AIDER_TIMEOUT"],
                 test_command=app.config["AIDER_TEST_COMMAND"],
                 keep_runs=app.config["AIDER_KEEP_RUNS"],
+                map_tokens=app.config["AIDER_MAP_TOKENS"],
+                max_input_tokens=app.config["AIDER_MAX_INPUT_TOKENS"],
             ),
         )
 
@@ -643,6 +646,16 @@ def _run_aider_job(
             if not selected_files:
                 progress("No files selected; asking planner for file context.")
                 selected_files = workflow.plan_files(issue_number, branch=read_branch)["files"]
+            owner_plan = workflow.required_owner_files(issue, workflow.candidate_files(read_branch), read_branch)
+            missing_owner_files = [path for path in owner_plan.get("files", []) if path not in selected_files]
+            if missing_owner_files:
+                selected_files = _prepend_selected_files(missing_owner_files, selected_files, app.config["MAX_SELECTED_FILES"])
+                progress(
+                    "Added required owner file(s) before Aider: "
+                    + ", ".join(missing_owner_files)
+                    + ". Reason: "
+                    + "; ".join(owner_plan.get("reasons", {}).get(path, path) for path in missing_owner_files)
+                )
             progress("Inspecting selected files, git state, and recent logs before editing.")
             memory = AiderMemory(Path(app.instance_path) / "aider_memory.json")
             aider_evidence = _collect_aider_evidence(app, workflow, issue, comments, selected_files, read_branch, memory)
@@ -655,6 +668,8 @@ def _run_aider_job(
                 max_retries=app.config["OPENAI_MAX_RETRIES"],
             )
             implementation_plan = planning_agent.plan(issue, selected_files, aider_evidence)
+            implementation_plan.setdefault("required_owner_files", owner_plan.get("files", []))
+            implementation_plan.setdefault("owner_file_reasons", owner_plan.get("reasons", {}))
             progress(f"Planner root-cause hypothesis: {implementation_plan.get('root_cause_hypothesis', 'No hypothesis provided.')}")
             owning_files = implementation_plan.get("owning_files") or []
             if owning_files:
@@ -668,6 +683,8 @@ def _run_aider_job(
                     timeout=app.config["AIDER_TIMEOUT"],
                     test_command=app.config["AIDER_TEST_COMMAND"],
                     keep_runs=app.config["AIDER_KEEP_RUNS"],
+                    map_tokens=app.config["AIDER_MAP_TOKENS"],
+                    max_input_tokens=app.config["AIDER_MAX_INPUT_TOKENS"],
                 ),
             )
             reviewer = PatchReviewAgent(
@@ -717,6 +734,17 @@ def _run_aider_job(
                 if validation_warnings:
                     proposal.setdefault("patch", {})["validation_warnings"] = validation_warnings
                     progress(f"Validation completed with {len(validation_warnings)} warning(s).")
+
+                owner_contract_failure = _owner_contract_failure(proposal, implementation_plan)
+                if owner_contract_failure:
+                    last_failure = owner_contract_failure
+                    progress(last_failure)
+                    memory.remember(issue, selected_files, last_failure, source="owner_contract")
+                    reviewer_feedback = owner_contract_failure
+                    if attempt >= max_attempts:
+                        raise AiderRunError(last_failure)
+                    progress("Sending owner-file contract feedback back to Aider for another attempt.")
+                    continue
 
                 progress("Reviewing generated changes against the issue.")
                 review = reviewer.review(
@@ -822,6 +850,16 @@ def _proposal_from_aider_result(
     }
 
 
+def _prepend_selected_files(required: list[str], selected: list[str], max_files: int) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for path in [*required, *selected]:
+        if path and path not in seen:
+            merged.append(path)
+            seen.add(path)
+    return merged[:max(1, max_files)]
+
+
 def _collect_aider_evidence(
     app: Flask,
     workflow: GitHubCTOWorkflow,
@@ -845,6 +883,7 @@ def _collect_aider_evidence(
                 "path": payload.get("path", ""),
                 "chars": len(content),
                 "summary": payload.get("summary", ""),
+                "responsibility_metadata": payload.get("responsibility_metadata", ""),
                 "signals": _content_signals(payload.get("path", ""), content),
                 "state_ownership": _state_ownership_signals(payload.get("path", ""), content),
             }
@@ -857,8 +896,9 @@ def _collect_aider_evidence(
             "labels": [label.get("name") for label in issue.get("labels", [])],
         },
         "selected_files": selected_files,
-        "read_branch": read_branch,
-        "recent_comments": [
+            "read_branch": read_branch,
+            "owner_plan": workflow.required_owner_files(issue, workflow.candidate_files(read_branch), read_branch),
+            "recent_comments": [
             {
                 "user": comment.get("user", {}).get("login", "user"),
                 "body": (comment.get("body") or "")[:1200],
@@ -992,6 +1032,23 @@ def _retry_feedback_from_validation(message: str) -> str:
         "Your previous patch failed deterministic validation. Revise the patch to fix these issues without "
         "adding unrelated changes:\n"
         f"{message}"
+    )
+
+
+def _owner_contract_failure(proposal: dict, implementation_plan: dict[str, Any]) -> str:
+    required = [str(path) for path in (implementation_plan.get("required_owner_files") or []) if path]
+    if not required:
+        return ""
+    changed = {str(change.get("path", "")) for change in proposal.get("changes", [])}
+    if any(path in changed for path in required):
+        return ""
+    criteria = implementation_plan.get("acceptance_criteria") or []
+    return (
+        "Owner-file contract failed: Aider did not change any required owner file. "
+        f"Required owner files: {', '.join(required)}. "
+        f"Changed files: {', '.join(sorted(changed)) or 'none'}. "
+        "Retry must edit at least one required owner file or explicitly make no changes only if the issue is already fully satisfied. "
+        + ("Acceptance criteria: " + "; ".join(str(item) for item in criteria[:5]) if criteria else "")
     )
 
 
