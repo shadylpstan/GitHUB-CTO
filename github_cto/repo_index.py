@@ -904,6 +904,12 @@ SKIP_PARTS = {
     "build",
     "vendor",
     "coverage",
+    "__pycache__",
+    "node_modules",
+    "npm",
+    "env",
+    "environment",
+    "config",
 }
 
 SKIP_SUFFIXES = {
@@ -921,12 +927,27 @@ SKIP_SUFFIXES = {
     ".jpeg",
     ".gif",
     ".zip",
+    ".env",
+    ".env.example",
+    ".config",
+    ".ini",
+    ".toml",
 }
 
 SKIP_FILENAMES = {
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
+    ".env",
+    ".env.example",
+    "config.py",
+    "config.json",
+    "config.yaml",
+    "config.yml",
+    ".flaskenv",
+    ".python-version",
+    ".npmrc",
+    ".nvmrc",
 }
 
 
