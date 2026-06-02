@@ -897,6 +897,8 @@ SKIP_PARTS = {
     ".git",
     ".venv",
     "venv",
+    "__pycache__",
+    "node_modules",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
@@ -927,6 +929,13 @@ SKIP_FILENAMES = {
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
+    ".env",
+    ".env.example",
+    ".DS_Store",
+    "config.py",
+    "config.json",
+    "settings.py",
+    "settings.json",
 }
 
 
