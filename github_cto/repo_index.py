@@ -897,6 +897,9 @@ SKIP_PARTS = {
     ".git",
     ".venv",
     "venv",
+    "__pycache__",
+    "node_modules",
+    "npm",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
@@ -904,6 +907,8 @@ SKIP_PARTS = {
     "build",
     "vendor",
     "coverage",
+    ".env",
+    "env",
 }
 
 SKIP_SUFFIXES = {
@@ -921,12 +926,38 @@ SKIP_SUFFIXES = {
     ".jpeg",
     ".gif",
     ".zip",
+    ".env",
+    ".config",
+    ".ini",
+    ".toml",
+    ".yaml",
+    ".yml",
+    # Do not exclude all .json files, handled below for config
 }
 
 SKIP_FILENAMES = {
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
+    ".env",
+    ".env.example",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.test",
+    "environment",
+    "environment.yml",
+    "environment.yaml",
+    "config.json",
+    "config.yaml",
+    "config.yml",
+    "config.toml",
+    "config.ini",
+    "settings.json",
+    "settings.yaml",
+    "settings.yml",
+    "settings.toml",
+    "settings.ini",
 }
 
 
@@ -935,10 +966,22 @@ def should_index_path(path: str) -> bool:
     parts = set(normalized.split("/"))
     name = Path(normalized).name
     suffix = Path(normalized).suffix.lower()
+    # Exclude folders and files in SKIP_PARTS, SKIP_FILENAMES, SKIP_SUFFIXES
     if parts & SKIP_PARTS:
         return False
     if name in SKIP_FILENAMES:
         return False
     if suffix in SKIP_SUFFIXES:
+        return False
+    # Exclude config/environment files by pattern for .json, .yaml, .yml, .toml, .ini
+    lowered = name.lower()
+    config_patterns = (
+        lowered.startswith("config.") or
+        lowered.startswith("settings.") or
+        lowered.startswith("environment.") or
+        lowered == ".env" or
+        lowered.startswith(".env")
+    )
+    if config_patterns and suffix in {".json", ".yaml", ".yml", ".toml", ".ini"}:
         return False
     return suffix in INDEX_EXTENSIONS and is_probably_text_file(normalized)
